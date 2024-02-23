@@ -145,8 +145,16 @@ impl<
 
         self.backend.finish_outgoing_cycle();
 
-        while let Some((event, task_index)) = self.backend.pop_incoming(Duration::from_millis(1)) {
+        //one cycle is process in 1ms then we minus 1ms with eslaped time
+        let mut remain_time = Duration::from_millis(1)
+            .checked_sub(now.elapsed())
+            .unwrap_or_else(|| Duration::from_micros(1));
+
+        while let Some((event, task_index)) = self.backend.pop_incoming(remain_time) {
             self.tasks[task_index].on_input(now, Input::Net(event));
+            remain_time = Duration::from_millis(1)
+                .checked_sub(now.elapsed())
+                .unwrap_or_else(|| Duration::from_micros(1));
         }
 
         self.backend.finish_incoming_cycle();
@@ -160,5 +168,6 @@ impl<
         ) {
             log::error!("Failed to send stats: {:?}", e);
         }
+        log::debug!("Worker process done in {}", now.elapsed().as_nanos());
     }
 }

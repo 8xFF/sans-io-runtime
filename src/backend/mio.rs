@@ -10,6 +10,8 @@ use crate::{NetIncoming, NetOutgoing};
 
 use super::Backend;
 
+const QUEUE_PKT_NUM: usize = 512;
+
 fn addr_to_token(addr: SocketAddr) -> Token {
     Token(addr.port() as usize)
 }
@@ -40,19 +42,21 @@ pub struct MioBackend<Owner: Copy + PartialEq + Eq> {
     event_buffer: Events,
     udp_sockets: HashMap<Token, UdpContainer<Owner>>,
     output: VecDeque<InQueue<Owner>>,
-    buffers: [[u8; 1500]; 128],
+    buffers: [[u8; 1500]; QUEUE_PKT_NUM],
     buffer_index: usize,
+    buffer_inqueue_count: usize,
 }
 
 impl<Owner: Copy + PartialEq + Eq> Default for MioBackend<Owner> {
     fn default() -> Self {
         Self {
             poll: Poll::new().expect("should create mio-poll"),
-            event_buffer: Events::with_capacity(128),
+            event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
             udp_sockets: HashMap::new(),
             output: VecDeque::new(),
-            buffers: [[0; 1500]; 128],
+            buffers: [[0; 1500]; QUEUE_PKT_NUM],
             buffer_index: 0,
+            buffer_inqueue_count: 0,
         }
     }
 }
@@ -150,6 +154,7 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                         buffer_index,
                         buffer_size,
                     } => {
+                        self.buffer_inqueue_count -= 1;
                         return Some((
                             NetIncoming::UdpPacket {
                                 from,
@@ -175,6 +180,9 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
             }
 
             for event in self.event_buffer.iter() {
+                if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
+                    break;
+                }
                 if let Some(socket) = self.udp_sockets.get(&event.token()) {
                     let buffer_index = self.buffer_index;
                     while let Ok((buffer_size, addr)) =
@@ -188,6 +196,11 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                             buffer_index,
                             buffer_size,
                         });
+                        self.buffer_inqueue_count += 1;
+                        if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
+                            log::warn!("Mio backend buffer full");
+                            break;
+                        }
                     }
                 }
             }

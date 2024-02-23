@@ -118,6 +118,7 @@ impl<
             .min_by_key(|(_, w)| w.stats.load())
             .map(|(i, _)| i)
             .expect("Should have at least one worker");
+        self.worker_threads[best_worker].stats.tasks += 1;
         if let Err(e) = self
             .worker_control_bus
             .send(best_worker, WorkerControlIn::Spawn(cfg))

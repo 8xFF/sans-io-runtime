@@ -25,7 +25,7 @@ enum EchoTaskInQueue {
 }
 
 struct EchoTask {
-    buffers: [[u8; 1500]; 128],
+    buffers: [[u8; 1500]; 512],
     buffer_index: usize,
     output: VecDeque<EchoTaskInQueue>,
 }
@@ -34,7 +34,7 @@ impl EchoTask {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
-            buffers: [[0; 1500]; 128],
+            buffers: [[0; 1500]; 512],
             buffer_index: 0,
             output: VecDeque::from([EchoTaskInQueue::UdpListen(cfg.bind)]),
         }
@@ -59,7 +59,6 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
             }
             Input::Net(NetIncoming::UdpPacket { from, to, data }) => {
                 assert!(data.len() <= 1500, "data too large");
-                log::info!("UdpPacket: {} -> {} {:?}", from, to, data);
                 let buffer_index = self.buffer_index;
                 self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
                 self.buffers[buffer_index][0..data.len()].copy_from_slice(data);
@@ -74,8 +73,6 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
                 if data == b"quit\n" {
                     log::info!("Destroying task");
                     self.output.push_back(EchoTaskInQueue::Destroy);
-                } else {
-                    log::info!("Echoing data not same with quit {:?}", b"quit\n")
                 }
             }
             _ => unreachable!("EchoTask only has NetIncoming variants"),
@@ -104,7 +101,7 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
 fn main() {
     env_logger::init();
     let mut controller =
-        Controller::<ExtIn, ExtOut, MSG, EchoTask, EchoTaskCfg, MioBackend<usize>>::new(1);
+        Controller::<ExtIn, ExtOut, MSG, EchoTask, EchoTaskCfg, MioBackend<usize>>::new(2);
     controller.start();
     controller.spawn(EchoTaskCfg {
         bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
