@@ -6,7 +6,7 @@ use std::{
 
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};
 
-use crate::{NetIncoming, NetOutgoing};
+use crate::{BackendOwner, NetIncoming, NetOutgoing};
 
 use super::Backend;
 
@@ -62,30 +62,6 @@ impl<Owner: Copy + PartialEq + Eq> Default for MioBackend<Owner> {
 }
 
 impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
-    fn remove_owner(&mut self, owner: Owner) {
-        // remove all sockets owned by owner and unregister from poll
-        let mut tokens = Vec::new();
-        for (token, socket) in self.udp_sockets.iter_mut() {
-            if socket.owner == owner {
-                if let Err(e) = self.poll.registry().deregister(&mut socket.socket) {
-                    log::error!("Mio deregister error {:?}", e);
-                }
-                tokens.push(*token);
-            }
-        }
-        for token in tokens {
-            self.udp_sockets.remove(&token);
-        }
-    }
-
-    fn swap_owner(&mut self, from: Owner, to: Owner) {
-        for (_, socket) in self.udp_sockets.iter_mut() {
-            if socket.owner == from {
-                socket.owner = to;
-            }
-        }
-    }
-
     fn on_action(&mut self, action: NetOutgoing, owner: Owner) {
         match action {
             NetOutgoing::UdpListen(addr) => {
@@ -214,4 +190,30 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
     fn finish_outgoing_cycle(&mut self) {}
 
     fn finish_incoming_cycle(&mut self) {}
+}
+
+impl<Owner: Copy + PartialEq + Eq> BackendOwner<Owner> for MioBackend<Owner> {
+    fn remove_owner(&mut self, owner: Owner) {
+        // remove all sockets owned by owner and unregister from poll
+        let mut tokens = Vec::new();
+        for (token, socket) in self.udp_sockets.iter_mut() {
+            if socket.owner == owner {
+                if let Err(e) = self.poll.registry().deregister(&mut socket.socket) {
+                    log::error!("Mio deregister error {:?}", e);
+                }
+                tokens.push(*token);
+            }
+        }
+        for token in tokens {
+            self.udp_sockets.remove(&token);
+        }
+    }
+
+    fn swap_owner(&mut self, from: Owner, to: Owner) {
+        for (_, socket) in self.udp_sockets.iter_mut() {
+            if socket.owner == from {
+                socket.owner = to;
+            }
+        }
+    }
 }

@@ -29,17 +29,16 @@ pub enum Input<'a, Ext, MSG> {
     External(Ext),
 }
 
-pub enum Output<'a, Ext, MSG> {
+pub enum Output<'a, Ext, ChannelId, MSG> {
     Net(NetOutgoing<'a>),
-    Bus(BusEvent<MSG>),
+    Bus(BusEvent<ChannelId, MSG>),
     External(Ext),
     Destroy,
 }
 
-pub trait Task<ExtIn, ExtOut, MSG, Cfg> {
+pub trait Task<ExtIn, ExtOut, ChannelId, MSG, Cfg> {
     fn build(cfg: Cfg) -> Self;
-    fn min_tick_interval(&self) -> std::time::Duration;
     fn on_tick(&mut self, now: Instant);
     fn on_input<'a>(&mut self, now: Instant, input: Input<'a, ExtIn, MSG>);
-    fn pop_output(&mut self, now: Instant) -> Option<Output<'_, ExtOut, MSG>>;
+    fn pop_output(&mut self, now: Instant) -> Option<Output<'_, ExtOut, ChannelId, MSG>>;
 }

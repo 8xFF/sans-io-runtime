@@ -1,15 +1,15 @@
-use std::collections::HashMap;
-
-use crate::BusChannelId;
+use std::{collections::HashMap, hash::Hash};
 
 #[derive(Debug, Default)]
-pub struct BusLocalHub<Owner> {
-    channels: HashMap<BusChannelId, Vec<Owner>>,
+pub struct BusLocalHub<ChannelId: Hash + PartialEq + Eq, Owner> {
+    channels: HashMap<ChannelId, Vec<Owner>>,
 }
 
-impl<Owner: PartialEq + Eq + Clone + Copy> BusLocalHub<Owner> {
+impl<ChannelId: Hash + PartialEq + Eq, Owner: PartialEq + Eq + Clone + Copy>
+    BusLocalHub<ChannelId, Owner>
+{
     /// subscribe to a channel. if it is first time subscription, return true; else return false
-    pub fn subscribe(&mut self, channel: BusChannelId, owner: Owner) -> bool {
+    pub fn subscribe(&mut self, channel: ChannelId, owner: Owner) -> bool {
         let entry = self.channels.entry(channel).or_default();
         if entry.contains(&owner) {
             false
@@ -20,7 +20,7 @@ impl<Owner: PartialEq + Eq + Clone + Copy> BusLocalHub<Owner> {
     }
 
     /// unsubscribe from a channel. if it is last time unsubscription, return true; else return false
-    pub fn unsubscribe(&mut self, channel: BusChannelId, owner: Owner) -> bool {
+    pub fn unsubscribe(&mut self, channel: ChannelId, owner: Owner) -> bool {
         if let Some(entry) = self.channels.get_mut(&channel) {
             if let Some(pos) = entry.iter().position(|x| *x == owner) {
                 entry.swap_remove(pos);
@@ -39,7 +39,7 @@ impl<Owner: PartialEq + Eq + Clone + Copy> BusLocalHub<Owner> {
     }
 
     /// get all subscribers of a channel
-    pub fn get_subscribers(&self, channel: BusChannelId) -> Option<&[Owner]> {
+    pub fn get_subscribers(&self, channel: ChannelId) -> Option<&[Owner]> {
         self.channels.get(&channel).map(|x| x.as_slice())
     }
 
