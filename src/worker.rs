@@ -2,7 +2,8 @@ use std::time::{Duration, Instant};
 
 use crate::{
     backend::Backend,
-    bus::{BusLegEvent, BusLegReceiver, BusSingleDest, BusSystemLocal},
+    bus::{BusLegReceiver, BusSendSingleFeature, BusSystemLocal},
+    owner::Owner,
     BackendOwner, NetIncoming, NetOutgoing,
 };
 
@@ -31,33 +32,32 @@ impl WorkerStats {
     }
 }
 
-pub enum WorkerInnerOutput<'a, Ext, Owner> {
+pub enum WorkerInnerOutput<'a, Ext> {
     Net(NetOutgoing<'a>, Owner),
     External(Ext),
 }
 
-pub struct WorkerCtx<'a, Owner> {
-    backend: &'a mut dyn BackendOwner<Owner>,
+pub struct WorkerCtx<'a> {
+    pub(crate) backend: &'a mut dyn BackendOwner,
 }
 
-pub trait WorkerInner<ExtIn, ExtOut, ICfg, SCfg, Owner> {
-    fn build(cfg: ICfg) -> Self;
+pub trait WorkerInner<ExtIn, ExtOut, ICfg, SCfg> {
+    fn build(worker: u16, cfg: ICfg) -> Self;
     fn tasks(&self) -> usize;
-    fn spawn(&mut self, ctx: WorkerCtx<'_, Owner>, cfg: SCfg);
-    fn on_ext(&mut self, ext: ExtIn);
-    fn on_net(&mut self, owner: Owner, net: NetIncoming);
-    fn inner_process(&mut self);
-    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut, Owner>>;
+    fn spawn(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>, cfg: SCfg);
+    fn on_ext(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>, ext: ExtIn);
+    fn on_net(&mut self, now: Instant, owner: Owner, net: NetIncoming);
+    fn inner_process(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>);
+    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut>>;
 }
 
 pub(crate) struct Worker<
     ExtIn: Clone,
     ExtOut: Clone,
-    Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg, Owner>,
+    Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg>,
     ICfg,
     SCfg: Clone,
-    B: Backend<Owner>,
-    Owner: Copy + PartialEq + Eq,
+    B: Backend,
 > {
     inner: Inner,
     backend: B,
@@ -69,12 +69,11 @@ pub(crate) struct Worker<
 impl<
         ExtIn: Clone,
         ExtOut: Clone,
-        Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg, Owner>,
-        B: Backend<Owner>,
+        Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg>,
+        B: Backend,
         ICfg,
         SCfg: Clone,
-        Owner: Copy + PartialEq + Eq,
-    > Worker<ExtIn, ExtOut, Inner, ICfg, SCfg, B, Owner>
+    > Worker<ExtIn, ExtOut, Inner, ICfg, SCfg, B>
 {
     pub fn new(
         inner: Inner,
@@ -92,25 +91,16 @@ impl<
 
     pub fn process(&mut self) {
         let now = Instant::now();
-        while let Some(control) = self.control_recv.recv() {
-            let msg = match control {
-                BusLegEvent::Direct(_source_leg, msg) => msg,
-                BusLegEvent::Broadcast(_, msg) => msg,
-                _ => {
-                    unreachable!("WorkerControlIn only has Spawn variant");
-                }
-            };
+        let mut ctx = WorkerCtx {
+            backend: &mut self.backend,
+        };
+        while let Some((_source, msg)) = self.control_recv.recv() {
             match msg {
                 WorkerControlIn::Ext(ext) => {
-                    self.inner.on_ext(ext);
+                    self.inner.on_ext(now, &mut ctx, ext);
                 }
                 WorkerControlIn::Spawn(cfg) => {
-                    self.inner.spawn(
-                        WorkerCtx {
-                            backend: &mut self.backend,
-                        },
-                        cfg,
-                    );
+                    self.inner.spawn(now, &mut ctx, cfg);
                 }
                 WorkerControlIn::StatsRequest => {
                     let stats = WorkerStats {
@@ -124,7 +114,7 @@ impl<
             }
         }
 
-        self.inner.inner_process();
+        self.inner.inner_process(now, &mut ctx);
         while let Some(output) = self.inner.pop_output() {
             match output {
                 WorkerInnerOutput::Net(net, owner) => {
@@ -146,7 +136,7 @@ impl<
             .unwrap_or_else(|| Duration::from_micros(1));
 
         while let Some((event, owner)) = self.backend.pop_incoming(remain_time) {
-            self.inner.on_net(owner, event);
+            self.inner.on_net(now, owner, event);
             remain_time = Duration::from_millis(1)
                 .checked_sub(now.elapsed())
                 .unwrap_or_else(|| Duration::from_micros(1));

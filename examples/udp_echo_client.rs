@@ -4,14 +4,27 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sans_io_runtime::{Controller, Input, MioBackend, NetIncoming, NetOutgoing, Output, Task};
+use sans_io_runtime::{
+    Controller, MioBackend, NetIncoming, NetOutgoing, Task, TaskGroup, TaskGroupOutput, TaskInput,
+    TaskOutput, WorkerInner,
+};
 
 type ExtIn = ();
 type ExtOut = ();
-type MSG = ();
+type ICfg = ();
+type SCfg = EchoTaskMultiCfg;
+
+#[derive(Debug, Clone)]
 struct EchoTaskCfg {
+    count: usize,
     dest: SocketAddr,
     brust_size: usize,
+}
+
+#[derive(Debug, Clone)]
+enum EchoTaskMultiCfg {
+    Type1(EchoTaskCfg),
+    Type2(EchoTaskCfg),
 }
 
 enum EchoTaskInQueue {
@@ -25,7 +38,8 @@ enum EchoTaskInQueue {
     Destroy,
 }
 
-struct EchoTask {
+struct EchoTask<const FakeType: u16> {
+    count: usize,
     cfg: EchoTaskCfg,
     buffers: [[u8; 1500]; 512],
     buffer_index: usize,
@@ -33,10 +47,11 @@ struct EchoTask {
     output: VecDeque<EchoTaskInQueue>,
 }
 
-impl EchoTask {
+impl<const FakeType: u16> EchoTask<FakeType> {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo client task in addr {}", cfg.dest);
         Self {
+            count: 0,
             cfg,
             buffers: [[0; 1500]; 512],
             buffer_index: 0,
@@ -49,20 +64,14 @@ impl EchoTask {
     }
 }
 
-impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
-    fn build(cfg: EchoTaskCfg) -> Self {
-        Self::new(cfg)
-    }
-
-    fn min_tick_interval(&self) -> Duration {
-        Duration::from_millis(1)
-    }
+impl<const FakeType: u16> Task<ExtIn, ExtOut> for EchoTask<FakeType> {
+    const TYPE: u16 = FakeType;
 
     fn on_tick(&mut self, _now: Instant) {}
 
-    fn on_input<'b>(&mut self, _now: Instant, input: Input<'b, ExtIn, MSG>) {
+    fn on_input<'b>(&mut self, _now: Instant, input: TaskInput<'b, ExtIn>) {
         match input {
-            Input::Net(NetIncoming::UdpListenResult { bind, result }) => {
+            TaskInput::Net(NetIncoming::UdpListenResult { bind, result }) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
                 if let Ok(addr) = result {
                     self.local_addr = addr;
@@ -77,7 +86,8 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
                     }
                 }
             }
-            Input::Net(NetIncoming::UdpPacket { from, to, data }) => {
+            TaskInput::Net(NetIncoming::UdpPacket { from, to, data }) => {
+                self.count += 1;
                 assert!(data.len() <= 1500, "data too large");
                 let buffer_index = self.buffer_index;
                 self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
@@ -90,7 +100,7 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
                     len: data.len(),
                 });
 
-                if data == b"quit\n" {
+                if self.count == self.cfg.count {
                     log::info!("Destroying task");
                     self.output.push_back(EchoTaskInQueue::Destroy);
                 }
@@ -99,39 +109,116 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
         }
     }
 
-    fn pop_output(&mut self, _now: Instant) -> Option<Output<'_, ExtOut, MSG>> {
+    fn pop_output(&mut self, _now: Instant) -> Option<TaskOutput<'_, ExtOut>> {
         let out = self.output.pop_front()?;
         match out {
-            EchoTaskInQueue::UdpListen(bind) => Some(Output::Net(NetOutgoing::UdpListen(bind))),
+            EchoTaskInQueue::UdpListen(bind) => Some(TaskOutput::Net(NetOutgoing::UdpListen(bind))),
             EchoTaskInQueue::SendUdpPacket {
                 from,
                 to,
                 buf_index,
                 len,
-            } => Some(Output::Net(NetOutgoing::UdpPacket {
+            } => Some(TaskOutput::Net(NetOutgoing::UdpPacket {
                 from,
                 to,
                 data: &self.buffers[buf_index][0..len],
             })),
-            EchoTaskInQueue::Destroy => Some(Output::Destroy),
+            EchoTaskInQueue::Destroy => Some(TaskOutput::Destroy),
+        }
+    }
+}
+
+struct EchoWorkerInner {
+    worker: u16,
+    echo_type1: TaskGroup<ExtIn, ExtOut, EchoTask<1>>,
+    echo_type2: TaskGroup<ExtIn, ExtOut, EchoTask<2>>,
+}
+
+impl WorkerInner<ExtIn, ExtOut, ICfg, SCfg> for EchoWorkerInner {
+    fn tasks(&self) -> usize {
+        self.echo_type1.tasks() + self.echo_type2.tasks()
+    }
+
+    fn build(worker: u16, _cfg: ()) -> Self {
+        Self {
+            worker,
+            echo_type1: TaskGroup::new(worker),
+            echo_type2: TaskGroup::new(worker),
+        }
+    }
+
+    fn spawn(&mut self, _now: Instant, _ctx: &mut sans_io_runtime::WorkerCtx<'_>, cfg: SCfg) {
+        match cfg {
+            EchoTaskMultiCfg::Type1(cfg) => {
+                self.echo_type1.add_task(EchoTask::new(cfg));
+            }
+            EchoTaskMultiCfg::Type2(cfg) => {
+                self.echo_type2.add_task(EchoTask::new(cfg));
+            }
+        }
+    }
+
+    fn on_ext(&mut self, now: Instant, ctx: &mut sans_io_runtime::WorkerCtx<'_>, ext: ExtIn) {
+        todo!()
+    }
+
+    fn on_net(&mut self, now: Instant, owner: sans_io_runtime::Owner, net: NetIncoming) {
+        match owner.group_id() {
+            Some(1) => {
+                self.echo_type1.on_net(now, owner, net);
+            }
+            Some(2) => {
+                self.echo_type2.on_net(now, owner, net);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn inner_process(&mut self, now: Instant, ctx: &mut sans_io_runtime::WorkerCtx<'_>) {
+        self.echo_type1.inner_process(now, ctx);
+        self.echo_type2.inner_process(now, ctx);
+    }
+
+    fn pop_output(&mut self) -> Option<sans_io_runtime::WorkerInnerOutput<'_, ExtOut>> {
+        if let Some(event) = self.echo_type1.pop_output() {
+            match event {
+                TaskGroupOutput::Net(net) => Some(sans_io_runtime::WorkerInnerOutput::Net(
+                    net,
+                    sans_io_runtime::Owner::worker(self.worker),
+                )),
+                TaskGroupOutput::External(_) => None,
+            }
+        } else if let Some(event) = self.echo_type2.pop_output() {
+            match event {
+                TaskGroupOutput::Net(net) => Some(sans_io_runtime::WorkerInnerOutput::Net(
+                    net,
+                    sans_io_runtime::Owner::worker(self.worker),
+                )),
+                TaskGroupOutput::External(_) => None,
+            }
+        } else {
+            None
         }
     }
 }
 
 fn main() {
     env_logger::init();
-    let mut controller =
-        Controller::<ExtIn, ExtOut, MSG, EchoTask, EchoTaskCfg, MioBackend<usize>>::new(2);
-    controller.start();
+    let mut controller = Controller::<ExtIn, ExtOut, EchoTaskMultiCfg>::new();
+    controller.add_worker::<_, EchoWorkerInner, MioBackend>(());
+    controller.add_worker::<_, EchoWorkerInner, MioBackend>(());
+
     for i in 0..10 {
-        controller.spawn(EchoTaskCfg {
-            brust_size: 25,
+        controller.spawn(EchoTaskMultiCfg::Type1(EchoTaskCfg {
+            count: 1000,
+            brust_size: 1,
             dest: SocketAddr::from(([127, 0, 0, 1], 10001)),
-        });
-        controller.spawn(EchoTaskCfg {
-            brust_size: 25,
+        }));
+        controller.spawn(EchoTaskMultiCfg::Type2(EchoTaskCfg {
+            count: 10000,
+            brust_size: 1,
             dest: SocketAddr::from(([127, 0, 0, 1], 10002)),
-        });
+        }));
     }
     loop {
         controller.process();

@@ -1,13 +1,16 @@
-use std::{collections::VecDeque, net::SocketAddr, time::Duration};
+use std::{
+    collections::VecDeque,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use sans_io_runtime::{
-    Controller, MioBackend, NetIncoming, NetOutgoing, WorkerCtx, WorkerInner, WorkerInnerOutput,
-    WorkerStats,
+    Controller, MioBackend, NetIncoming, NetOutgoing, Owner, WorkerCtx, WorkerInner,
+    WorkerInnerOutput,
 };
 
 type ExtIn = ();
 type ExtOut = ();
-type Owner = ();
 type SCfg = ();
 
 struct EchoWorkerCfg {
@@ -25,34 +28,30 @@ enum EchoWorkerInQueue {
 }
 
 struct EchoWorker {
+    worker: u16,
     buffers: [[u8; 1500]; 512],
     buffer_index: usize,
     output: VecDeque<EchoWorkerInQueue>,
 }
 
-impl EchoWorker {
-    pub fn new(cfg: EchoWorkerCfg) -> Self {
+impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, ()> for EchoWorker {
+    fn build(worker: u16, cfg: EchoWorkerCfg) -> Self {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
+            worker,
             buffers: [[0; 1500]; 512],
             buffer_index: 0,
             output: VecDeque::from([EchoWorkerInQueue::UdpListen(cfg.bind)]),
         }
-    }
-}
-
-impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, (), ()> for EchoWorker {
-    fn build(cfg: EchoWorkerCfg) -> Self {
-        Self::new(cfg)
     }
 
     fn tasks(&self) -> usize {
         1
     }
 
-    fn spawn(&mut self, ctx: WorkerCtx<'_, Owner>, cfg: SCfg) {}
-    fn on_ext(&mut self, ext: ExtIn) {}
-    fn on_net(&mut self, owner: Owner, input: NetIncoming) {
+    fn spawn(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _cfg: SCfg) {}
+    fn on_ext(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _ext: ExtIn) {}
+    fn on_net(&mut self, _now: Instant, _owner: Owner, input: NetIncoming) {
         match input {
             NetIncoming::UdpListenResult { bind, result } => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
@@ -70,16 +69,16 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, (), ()> for EchoWorker {
                     len: data.len(),
                 });
             }
-            _ => unreachable!("EchoWorker only has NetIncoming variants"),
         }
     }
-    fn inner_process(&mut self) {}
-    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut, Owner>> {
+    fn inner_process(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>) {}
+    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut>> {
         let out = self.output.pop_front()?;
         match out {
-            EchoWorkerInQueue::UdpListen(bind) => {
-                Some(WorkerInnerOutput::Net(NetOutgoing::UdpListen(bind), ()))
-            }
+            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Net(
+                NetOutgoing::UdpListen(bind),
+                Owner::worker(self.worker),
+            )),
             EchoWorkerInQueue::SendUdpPacket {
                 from,
                 to,
@@ -91,7 +90,7 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, (), ()> for EchoWorker {
                     to,
                     data: &self.buffers[buf_index][0..len],
                 },
-                (),
+                Owner::worker(self.worker),
             )),
         }
     }
@@ -99,9 +98,12 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, (), ()> for EchoWorker {
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg>::new(2);
-    controller.add_worker::<(), _, EchoWorker, MioBackend<()>>(EchoWorkerCfg {
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg>::new();
+    controller.add_worker::<_, EchoWorker, MioBackend>(EchoWorkerCfg {
         bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
+    });
+    controller.add_worker::<_, EchoWorker, MioBackend>(EchoWorkerCfg {
+        bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
     });
     loop {
         controller.process();

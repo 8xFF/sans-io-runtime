@@ -6,7 +6,7 @@ use std::{
 
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};
 
-use crate::{BackendOwner, NetIncoming, NetOutgoing};
+use crate::{owner::Owner, BackendOwner, NetIncoming, NetOutgoing};
 
 use super::Backend;
 
@@ -37,7 +37,7 @@ enum InQueue<Owner> {
     },
 }
 
-pub struct MioBackend<Owner: Copy + PartialEq + Eq> {
+pub struct MioBackend {
     poll: Poll,
     event_buffer: Events,
     udp_sockets: HashMap<Token, UdpContainer<Owner>>,
@@ -47,7 +47,7 @@ pub struct MioBackend<Owner: Copy + PartialEq + Eq> {
     buffer_inqueue_count: usize,
 }
 
-impl<Owner: Copy + PartialEq + Eq> Default for MioBackend<Owner> {
+impl Default for MioBackend {
     fn default() -> Self {
         Self {
             poll: Poll::new().expect("should create mio-poll"),
@@ -61,64 +61,7 @@ impl<Owner: Copy + PartialEq + Eq> Default for MioBackend<Owner> {
     }
 }
 
-impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
-    fn on_action(&mut self, action: NetOutgoing, owner: Owner) {
-        match action {
-            NetOutgoing::UdpListen(addr) => {
-                assert!(
-                    !addr.ip().is_unspecified(),
-                    "should not bind to unspecified ip"
-                );
-                log::info!("MioBackend: UdpListen {:?}", addr);
-                match UdpSocket::bind(addr) {
-                    Ok(mut socket) => {
-                        let local_addr = socket.local_addr().expect("should access udp local_addr");
-                        let token = addr_to_token(local_addr);
-                        if let Err(e) =
-                            self.poll
-                                .registry()
-                                .register(&mut socket, token, Interest::READABLE)
-                        {
-                            log::error!("Mio register error {:?}", e);
-                            return;
-                        }
-                        self.output.push_back(InQueue::UdpListenResult {
-                            owner,
-                            bind: addr,
-                            result: Ok(local_addr),
-                        });
-                        self.udp_sockets.insert(
-                            token,
-                            UdpContainer {
-                                socket,
-                                local_addr,
-                                owner,
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Mio bind error {:?}", e);
-                        self.output.push_back(InQueue::UdpListenResult {
-                            owner,
-                            bind: addr,
-                            result: Err(e),
-                        });
-                    }
-                }
-            }
-            NetOutgoing::UdpPacket { from, to, data } => {
-                let token = addr_to_token(from);
-                if let Some(socket) = self.udp_sockets.get_mut(&token) {
-                    if let Err(e) = socket.socket.send_to(data, to) {
-                        log::error!("Mio send_to error {:?}", e);
-                    }
-                } else {
-                    log::error!("Mio send_to error: no socket for {:?}", from);
-                }
-            }
-        }
-    }
-
+impl Backend for MioBackend {
     fn pop_incoming(&mut self, timeout: Duration) -> Option<(NetIncoming, Owner)> {
         loop {
             if let Some(wait) = self.output.pop_front() {
@@ -192,7 +135,64 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
     fn finish_incoming_cycle(&mut self) {}
 }
 
-impl<Owner: Copy + PartialEq + Eq> BackendOwner<Owner> for MioBackend<Owner> {
+impl BackendOwner for MioBackend {
+    fn on_action(&mut self, action: NetOutgoing, owner: Owner) {
+        match action {
+            NetOutgoing::UdpListen(addr) => {
+                assert!(
+                    !addr.ip().is_unspecified(),
+                    "should not bind to unspecified ip"
+                );
+                log::info!("MioBackend: UdpListen {:?}", addr);
+                match UdpSocket::bind(addr) {
+                    Ok(mut socket) => {
+                        let local_addr = socket.local_addr().expect("should access udp local_addr");
+                        let token = addr_to_token(local_addr);
+                        if let Err(e) =
+                            self.poll
+                                .registry()
+                                .register(&mut socket, token, Interest::READABLE)
+                        {
+                            log::error!("Mio register error {:?}", e);
+                            return;
+                        }
+                        self.output.push_back(InQueue::UdpListenResult {
+                            owner,
+                            bind: addr,
+                            result: Ok(local_addr),
+                        });
+                        self.udp_sockets.insert(
+                            token,
+                            UdpContainer {
+                                socket,
+                                local_addr,
+                                owner,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Mio bind error {:?}", e);
+                        self.output.push_back(InQueue::UdpListenResult {
+                            owner,
+                            bind: addr,
+                            result: Err(e),
+                        });
+                    }
+                }
+            }
+            NetOutgoing::UdpPacket { from, to, data } => {
+                let token = addr_to_token(from);
+                if let Some(socket) = self.udp_sockets.get_mut(&token) {
+                    if let Err(e) = socket.socket.send_to(data, to) {
+                        log::error!("Mio send_to error {:?}", e);
+                    }
+                } else {
+                    log::error!("Mio send_to error: no socket for {:?}", from);
+                }
+            }
+        }
+    }
+
     fn remove_owner(&mut self, owner: Owner) {
         // remove all sockets owned by owner and unregister from poll
         let mut tokens = Vec::new();

@@ -1,9 +1,7 @@
-use std::collections::VecDeque;
-
 use crate::{
     backend::Backend,
     bus::{
-        BusLegEvent, BusLegReceiver, BusMultiDest, BusSingleDest, BusSystemBuilder, BusSystemLocal,
+        BusEventSource, BusLegReceiver, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder,
     },
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
 };
@@ -14,8 +12,7 @@ struct WorkerContainer {
 }
 
 pub struct Controller<ExtIn: Clone, ExtOut: Clone, SCfg: Clone> {
-    worker_control_bus: BusSystemLocal<u16, WorkerControlIn<ExtIn, SCfg>>,
-    worker_control_recv: VecDeque<(BusLegReceiver<u16, WorkerControlIn<ExtIn, SCfg>>, usize)>,
+    worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>>,
     worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>>,
     worker_event_recv: BusLegReceiver<u16, WorkerControlOut<ExtOut>>,
     worker_threads: Vec<WorkerContainer>,
@@ -27,41 +24,32 @@ impl<
         SCfg: 'static + Send + Sync + Clone,
     > Controller<ExtIn, ExtOut, SCfg>
 {
-    pub fn new(workers: usize) -> Self {
-        let mut worker_control_bus = BusSystemBuilder::default();
-        let mut worker_control_recv = VecDeque::new();
-        for _ in 0..workers {
-            worker_control_recv.push_back(worker_control_bus.new_leg());
-        }
+    pub fn new() -> Self {
+        let worker_control_bus = BusSystemBuilder::default();
         let mut worker_event_bus = BusSystemBuilder::default();
-        let (worker_event_recv, current_leg_index) = worker_event_bus.new_leg();
+        let (worker_event_recv, _current_leg_index) = worker_event_bus.new_leg();
 
         Self {
-            worker_control_bus: worker_control_bus.build_local(current_leg_index),
-            worker_control_recv,
-            worker_event_bus: worker_event_bus,
+            worker_control_bus,
+            worker_event_bus,
             worker_event_recv,
             worker_threads: Vec::new(),
         }
     }
 
     pub fn add_worker<
-        Owner: Copy + PartialEq + Eq,
         ICfg: 'static + Send + Sync,
-        Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg, Owner>,
-        B: Backend<Owner>,
+        Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg>,
+        B: Backend,
     >(
         &mut self,
         cfg: ICfg,
     ) {
-        let (worker_control_recv, worker_event_index) = self
-            .worker_control_recv
-            .pop_front()
-            .expect("Should have worker control recv");
+        let (worker_control_recv, worker_event_index) = self.worker_control_bus.new_leg();
         let worker_event_bus = self.worker_event_bus.build_local(worker_event_index);
         let join = std::thread::spawn(move || {
-            let mut worker = worker::Worker::<ExtIn, ExtOut, Inner, ICfg, SCfg, B, Owner>::new(
-                Inner::build(cfg),
+            let mut worker = worker::Worker::<ExtIn, ExtOut, Inner, ICfg, SCfg, B>::new(
+                Inner::build(worker_event_index as u16, cfg),
                 worker_event_bus,
                 worker_control_recv,
             );
@@ -78,10 +66,10 @@ impl<
     pub fn process(&mut self) {
         self.worker_control_bus
             .broadcast(WorkerControlIn::StatsRequest);
-        while let Some(event) = self.worker_event_recv.recv() {
-            match event {
-                BusLegEvent::Direct(source_leg, WorkerControlOut::Stats(stats)) => {
-                    log::info!("Worker stats: {:?}", stats);
+        while let Some((source, event)) = self.worker_event_recv.recv() {
+            match (source, event) {
+                (BusEventSource::Direct(source_leg), WorkerControlOut::Stats(stats)) => {
+                    log::debug!("Worker stats: {:?}", stats);
                     self.worker_threads[source_leg].stats = stats;
                 }
                 _ => {
