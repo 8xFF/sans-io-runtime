@@ -12,6 +12,21 @@ pub enum NetIncoming<'a> {
         to: SocketAddr,
         data: &'a [u8],
     },
+    TcpListenResult {
+        bind: SocketAddr,
+        result: Result<SocketAddr, std::io::Error>,
+    },
+    TcpNewConnection {
+        remote_addr: SocketAddr,
+    },
+    TcpPacket {
+        from: SocketAddr,
+        to: SocketAddr,
+        data: &'a [u8],
+    },
+    TcpConnectionClose {
+        addr: SocketAddr,
+    },
 }
 
 pub enum NetOutgoing<'a> {
@@ -20,6 +35,15 @@ pub enum NetOutgoing<'a> {
         from: SocketAddr,
         to: SocketAddr,
         data: &'a [u8],
+    },
+    TcpListen(SocketAddr),
+    TcpPacket {
+        from: SocketAddr,
+        to: SocketAddr,
+        data: &'a [u8],
+    },
+    TcpClose {
+        remote_addr: SocketAddr,
     },
 }
 
