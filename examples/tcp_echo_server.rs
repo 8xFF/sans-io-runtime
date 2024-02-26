@@ -28,6 +28,7 @@ enum EchoTaskInQueue {
 }
 
 struct EchoTask {
+    addr: SocketAddr,
     buffers: [[u8; 1500]; 512],
     buffer_index: usize,
     output: VecDeque<EchoTaskInQueue>,
@@ -37,6 +38,7 @@ impl EchoTask {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
+            addr: cfg.bind,
             buffers: [[0; 1500]; 512],
             buffer_index: 0,
             output: VecDeque::from([EchoTaskInQueue::TcpListen(cfg.bind)]),
@@ -111,7 +113,10 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
                     data: &self.buffers[buf_index][0..len],
                 })),
                 EchoTaskInQueue::Close { remote_addr } => {
-                    Some(Output::Net(NetOutgoing::TcpClose { remote_addr }))
+                    Some(Output::Net(NetOutgoing::TcpClose {
+                        local_addr: self.addr,
+                        remote_addr,
+                    }))
                 }
                 EchoTaskInQueue::Destroy => Some(Output::Destroy),
             },
@@ -123,10 +128,13 @@ impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
 fn main() {
     env_logger::init();
     let mut controller =
-        Controller::<ExtIn, ExtOut, MSG, EchoTask, EchoTaskCfg, MioBackend<usize>>::new(1);
+        Controller::<ExtIn, ExtOut, MSG, EchoTask, EchoTaskCfg, MioBackend<usize>>::new(2);
     controller.start();
     controller.spawn(EchoTaskCfg {
         bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
+    });
+    controller.spawn(EchoTaskCfg {
+        bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
     });
     loop {
         controller.process();

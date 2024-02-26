@@ -26,17 +26,29 @@ struct UdpContainer<Owner> {
     owner: Owner,
 }
 
-struct TcpContainer<Owner> {
-    listener: TcpListener,
-    local_addr: SocketAddr,
+struct TcpConnectionContainer<Owner> {
+    stream: TcpStream,
+    remote_addr: SocketAddr,
     owner: Owner,
 }
 
-struct TcpConnectionContainer<Owner> {
-    stream: TcpStream,
+struct TcpContainer<Owner> {
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    conns: HashMap<SocketAddr, TcpConnectionContainer<Owner>>,
+    owner: Owner,
+}
+
+struct TcpConnectionPath {
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
-    owner: Owner,
+}
+
+impl TcpConnectionPath {
+    fn token(&self) -> Token {
+        let value = (self.remote_addr.port() as usize) << 16 | (self.local_addr.port() as usize);
+        Token(value)
+    }
 }
 
 enum InQueue<Owner> {
@@ -70,7 +82,8 @@ enum InQueue<Owner> {
     },
     TcpConnectionClose {
         owner: Owner,
-        token: Token,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
     },
 }
 
@@ -79,7 +92,7 @@ pub struct MioBackend<Owner: Copy + PartialEq + Eq> {
     event_buffer: Events,
     udp_sockets: HashMap<Token, UdpContainer<Owner>>,
     tcp_listeners: HashMap<Token, TcpContainer<Owner>>,
-    tcp_connections: HashMap<Token, TcpConnectionContainer<Owner>>,
+    connection_paths: HashMap<Token, TcpConnectionPath>,
     output: VecDeque<InQueue<Owner>>,
     buffers: [[u8; 1500]; QUEUE_PKT_NUM],
     buffer_index: usize,
@@ -93,7 +106,7 @@ impl<Owner: Copy + PartialEq + Eq> Default for MioBackend<Owner> {
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
             udp_sockets: HashMap::new(),
             tcp_listeners: HashMap::new(),
-            tcp_connections: HashMap::new(),
+            connection_paths: HashMap::new(),
             output: VecDeque::new(),
             buffers: [[0; 1500]; QUEUE_PKT_NUM],
             buffer_index: 0,
@@ -211,6 +224,7 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                             TcpContainer {
                                 listener,
                                 local_addr,
+                                conns: HashMap::new(),
                                 owner,
                             },
                         );
@@ -226,19 +240,26 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                 }
             }
             NetOutgoing::TcpPacket { from, to, data } => {
-                let token = addr_to_token(to);
-                if let Some(connection) = self.tcp_connections.get_mut(&token) {
-                    if let Err(e) = connection.stream.write(data) {
-                        log::error!("MioBackend: Tcp send error: {:?}", e);
+                let token = addr_to_token(from);
+                if let Some(listner) = self.tcp_listeners.get_mut(&token) {
+                    if let Some(conn) = listner.conns.get_mut(&to) {
+                        if let Err(e) = conn.stream.write(data) {
+                            log::error!("MioBackend: Tcp send error: {:?}", e);
+                        }
+                    } else {
+                        log::error!("MioBackend: Tcp send error: no connection for {:?}", to);
                     }
-                } else {
-                    log::error!("MioBackend: Tcp send error: no connection for {:?}", to);
                 }
             }
-            NetOutgoing::TcpClose { remote_addr } => {
-                let token = addr_to_token(remote_addr);
-                self.output
-                    .push_back(InQueue::TcpConnectionClose { owner, token });
+            NetOutgoing::TcpClose {
+                local_addr,
+                remote_addr,
+            } => {
+                self.output.push_back(InQueue::TcpConnectionClose {
+                    owner,
+                    local_addr,
+                    remote_addr,
+                });
             }
         }
     }
@@ -298,15 +319,22 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                             owner,
                         ));
                     }
-                    InQueue::TcpConnectionClose { owner, token } => {
-                        if let Some(mut connection) = self.tcp_connections.remove(&token) {
-                            let _ = self.poll.registry().deregister(&mut connection.stream);
-                            return Some((
-                                NetIncoming::TcpConnectionClose {
-                                    addr: connection.remote_addr,
-                                },
-                                owner,
-                            ));
+                    InQueue::TcpConnectionClose {
+                        owner,
+                        local_addr,
+                        remote_addr,
+                    } => {
+                        let token = addr_to_token(local_addr);
+                        if let Some(listener) = self.tcp_listeners.get_mut(&token) {
+                            if let Some(mut conn) = listener.conns.remove(&remote_addr) {
+                                let _ = self.poll.registry().deregister(&mut conn.stream);
+                                return Some((
+                                    NetIncoming::TcpConnectionClose {
+                                        addr: conn.remote_addr,
+                                    },
+                                    owner,
+                                ));
+                            }
                         }
                     }
                 }
@@ -341,10 +369,14 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                         }
                     }
                 }
-                if let Some(listener) = self.tcp_listeners.get(&event.token()) {
+                if let Some(listener) = self.tcp_listeners.get_mut(&event.token()) {
                     match listener.listener.accept() {
                         Ok((mut stream, addr)) => {
-                            let token = addr_to_token(addr);
+                            let path = TcpConnectionPath {
+                                local_addr: listener.local_addr,
+                                remote_addr: addr,
+                            };
+                            let token = path.token();
                             if let Err(e) = self.poll.registry().register(
                                 &mut stream,
                                 token,
@@ -361,15 +393,15 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                                 owner: listener.owner,
                                 remote_addr: addr,
                             });
-                            self.tcp_connections.insert(
-                                token,
+                            listener.conns.insert(
+                                addr,
                                 TcpConnectionContainer {
                                     stream,
-                                    local_addr: listener.local_addr,
                                     remote_addr: addr,
                                     owner: listener.owner,
                                 },
                             );
+                            self.connection_paths.insert(token, path);
                         }
                         Err(e) => {
                             log::error!("MioBackend: accept connection error {:?}", e);
@@ -378,50 +410,56 @@ impl<Owner: Copy + PartialEq + Eq> Backend<Owner> for MioBackend<Owner> {
                     }
                 }
 
-                if let Some(connection) = self.tcp_connections.get_mut(&event.token()) {
-                    if event.is_readable() {
-                        let mut connection_closed = false;
-                        let buffer_index = self.buffer_index;
-                        loop {
-                            match connection.stream.read(&mut self.buffers[buffer_index]) {
-                                Ok(0) => {
-                                    connection_closed = true;
-                                    break;
-                                }
-                                Ok(n) => {
-                                    self.buffer_index =
-                                        (self.buffer_index + 1) % self.buffers.len();
-                                    self.output.push_back(InQueue::TcpData {
-                                        owner: connection.owner,
-                                        from: connection.remote_addr,
-                                        to: connection.local_addr,
-                                        buffer_index,
-                                        buffer_size: n,
-                                    });
-                                    self.buffer_inqueue_count += 1;
-                                    if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
-                                        log::warn!("MioBackend: buffer full");
-                                        break;
+                if let Some(path) = self.connection_paths.get_mut(&event.token()) {
+                    let token = addr_to_token(path.local_addr);
+                    if let Some(listener) = self.tcp_listeners.get_mut(&token) {
+                        if let Some(conn) = listener.conns.get_mut(&path.remote_addr) {
+                            if event.is_readable() {
+                                let mut connection_closed = false;
+                                let buffer_index = self.buffer_index;
+                                loop {
+                                    match conn.stream.read(&mut self.buffers[buffer_index]) {
+                                        Ok(0) => {
+                                            connection_closed = true;
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            self.buffer_index =
+                                                (self.buffer_index + 1) % self.buffers.len();
+                                            self.output.push_back(InQueue::TcpData {
+                                                owner: conn.owner,
+                                                from: conn.remote_addr,
+                                                to: listener.local_addr,
+                                                buffer_index,
+                                                buffer_size: n,
+                                            });
+                                            self.buffer_inqueue_count += 1;
+                                            if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
+                                                log::warn!("MioBackend: buffer full");
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => match e.kind() {
+                                            io::ErrorKind::WouldBlock => break,
+                                            io::ErrorKind::Interrupted => continue,
+                                            _ => {
+                                                log::error!(
+                                                    "MioBackend: Error when received data from tcp {:?}",
+                                                    e
+                                                );
+                                            }
+                                        },
                                     }
                                 }
-                                Err(e) => match e.kind() {
-                                    io::ErrorKind::WouldBlock => break,
-                                    io::ErrorKind::Interrupted => continue,
-                                    _ => {
-                                        log::error!(
-                                            "MioBackend: Error when received data from tcp {:?}",
-                                            e
-                                        );
-                                    }
-                                },
-                            }
-                        }
 
-                        if connection_closed {
-                            self.output.push_back(InQueue::TcpConnectionClose {
-                                owner: connection.owner,
-                                token: event.token(),
-                            });
+                                if connection_closed {
+                                    self.output.push_back(InQueue::TcpConnectionClose {
+                                        owner: listener.owner,
+                                        local_addr: listener.local_addr,
+                                        remote_addr: conn.remote_addr,
+                                    });
+                                }
+                            }
                         }
                     }
                 }

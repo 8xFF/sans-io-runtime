@@ -43,6 +43,7 @@ pub enum NetOutgoing<'a> {
         data: &'a [u8],
     },
     TcpClose {
+        local_addr: SocketAddr,
         remote_addr: SocketAddr,
     },
 }
