@@ -10,29 +10,41 @@ pub use local_hub::*;
 pub enum BusEvent<ChannelId, MSG> {
     ChannelSubscribe(ChannelId),
     ChannelUnsubscribe(ChannelId),
-    ChannelPublish(ChannelId, MSG),
+    /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
+    ChannelPublish(ChannelId, bool, MSG),
+}
+
+impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
+    pub fn high_priority(&self) -> bool {
+        match self {
+            Self::ChannelSubscribe(_) => true,
+            Self::ChannelUnsubscribe(_) => true,
+            Self::ChannelPublish(_, _, _) => false,
+        }
+    }
 }
 
 pub trait BusSendSingleFeature<MSG> {
-    fn send(&self, dest_leg: usize, msg: MSG) -> Result<usize, BusLegSenderErr>;
+    fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr>;
 }
 
 pub trait BusSendMultiFeature<MSG: Clone> {
-    fn broadcast(&self, msg: MSG);
+    fn broadcast(&self, safe: bool, msg: MSG);
 }
 
 pub trait BusPubSubFeature<ChannelId, MSG: Clone> {
     fn subscribe(&self, channel: ChannelId);
     fn unsubscribe(&self, channel: ChannelId);
-    fn publish(&self, channel: ChannelId, msg: MSG);
+    fn publish(&self, channel: ChannelId, safe: bool, msg: MSG);
 }
 
-#[derive(Debug)]
-pub struct BusSystemBuilder<ChannelId, MSG> {
-    legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG>>>>,
+pub struct BusSystemBuilder<ChannelId, MSG, const STACK_SIZE: usize> {
+    legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG, STACK_SIZE>>>>,
 }
 
-impl<ChannelId, MSG> Default for BusSystemBuilder<ChannelId, MSG> {
+impl<ChannelId, MSG, const STACK_SIZE: usize> Default
+    for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
+{
     fn default() -> Self {
         Self {
             legs: Default::default(),
@@ -40,8 +52,8 @@ impl<ChannelId, MSG> Default for BusSystemBuilder<ChannelId, MSG> {
     }
 }
 
-impl<ChannelId, MSG> BusSystemBuilder<ChannelId, MSG> {
-    pub fn new_worker(&mut self) -> BusWorker<ChannelId, MSG> {
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusSystemBuilder<ChannelId, MSG, STACK_SIZE> {
+    pub fn new_worker(&mut self) -> BusWorker<ChannelId, MSG, STACK_SIZE> {
         let mut legs = self.legs.write();
         let leg_index = legs.len();
         let (sender, recv) = create_bus_leg();
@@ -56,30 +68,34 @@ impl<ChannelId, MSG> BusSystemBuilder<ChannelId, MSG> {
     }
 }
 
-impl<ChannelId, MSG> BusSendSingleFeature<MSG> for BusSystemBuilder<ChannelId, MSG> {
-    fn send(&self, dest_leg: usize, msg: MSG) -> Result<usize, BusLegSenderErr> {
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusSendSingleFeature<MSG>
+    for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
+{
+    fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr> {
         let legs = self.legs.read();
-        legs[dest_leg].send(BusEventSource::External, msg)
+        legs[dest_leg].send(BusEventSource::External, safe, msg)
     }
 }
 
-impl<ChannelId, MSG: Clone> BusSendMultiFeature<MSG> for BusSystemBuilder<ChannelId, MSG> {
-    fn broadcast(&self, msg: MSG) {
+impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
+    for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
+{
+    fn broadcast(&self, safe: bool, msg: MSG) {
         let legs = self.legs.read();
         for leg in &*legs {
-            let _ = leg.send(BusEventSource::External, msg.clone());
+            let _ = leg.send(BusEventSource::External, safe, msg.clone());
         }
     }
 }
 
-pub struct BusWorker<ChannelId, MSG> {
+pub struct BusWorker<ChannelId, MSG, const STACK_SIZE: usize> {
     leg_index: usize,
-    receiver: BusLegReceiver<ChannelId, MSG>,
-    legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG>>>>,
+    receiver: BusLegReceiver<ChannelId, MSG, STACK_SIZE>,
+    legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG, STACK_SIZE>>>>,
     channels: Arc<RwLock<HashMap<ChannelId, Vec<usize>>>>,
 }
 
-impl<ChannelId, MSG> BusWorker<ChannelId, MSG> {
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusWorker<ChannelId, MSG, STACK_SIZE> {
     pub fn leg_index(&self) -> usize {
         self.leg_index
     }
@@ -89,24 +105,28 @@ impl<ChannelId, MSG> BusWorker<ChannelId, MSG> {
     }
 }
 
-impl<ChannelId, MSG> BusSendSingleFeature<MSG> for BusWorker<ChannelId, MSG> {
-    fn send(&self, dest_leg: usize, msg: MSG) -> Result<usize, BusLegSenderErr> {
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusSendSingleFeature<MSG>
+    for BusWorker<ChannelId, MSG, STACK_SIZE>
+{
+    fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr> {
         let legs = self.legs.read();
-        legs[dest_leg].send(BusEventSource::Direct(self.leg_index), msg)
+        legs[dest_leg].send(BusEventSource::Direct(self.leg_index), safe, msg)
     }
 }
 
-impl<ChannelId, MSG: Clone> BusSendMultiFeature<MSG> for BusWorker<ChannelId, MSG> {
-    fn broadcast(&self, msg: MSG) {
+impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
+    for BusWorker<ChannelId, MSG, STACK_SIZE>
+{
+    fn broadcast(&self, safe: bool, msg: MSG) {
         let legs = self.legs.read();
         for leg in &*legs {
-            let _ = leg.send(BusEventSource::Broadcast(self.leg_index), msg.clone());
+            let _ = leg.send(BusEventSource::Broadcast(self.leg_index), safe, msg.clone());
         }
     }
 }
 
-impl<ChannelId: Copy + Hash + PartialEq + Eq, MSG: Clone> BusPubSubFeature<ChannelId, MSG>
-    for BusWorker<ChannelId, MSG>
+impl<ChannelId: Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SIZE: usize>
+    BusPubSubFeature<ChannelId, MSG> for BusWorker<ChannelId, MSG, STACK_SIZE>
 {
     fn subscribe(&self, channel: ChannelId) {
         let mut channels = self.channels.write();
@@ -126,13 +146,14 @@ impl<ChannelId: Copy + Hash + PartialEq + Eq, MSG: Clone> BusPubSubFeature<Chann
         }
     }
 
-    fn publish(&self, channel: ChannelId, msg: MSG) {
+    fn publish(&self, channel: ChannelId, safe: bool, msg: MSG) {
         let legs = self.legs.read();
         let channels = self.channels.read();
         if let Some(entry) = channels.get(&channel) {
             for &leg_index in entry {
                 let _ = legs[leg_index].send(
                     BusEventSource::Channel(self.leg_index, channel),
+                    safe,
                     msg.clone(),
                 );
             }

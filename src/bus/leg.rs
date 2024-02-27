@@ -1,8 +1,7 @@
 use parking_lot::Mutex;
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
-const BUS_CHANNEL_PRE_ALOC: usize = 64;
-const BUS_CHANNEL_SIZE_LIMIT: usize = 1024;
+use crate::collections::DynamicDeque;
 
 /// Represents the identifier of a channel.
 #[derive(Debug, PartialEq, Eq)]
@@ -18,16 +17,15 @@ pub enum BusLegSenderErr {
     ChannelFull,
 }
 
-#[derive(Debug)]
 /// A sender for a bus leg.
 ///
 /// This struct is used to send messages through a bus leg. It holds a queue of messages
 /// that are waiting to be processed by the bus leg.
-pub struct BusLegSender<ChannelId, MSG> {
-    queue: Arc<Mutex<VecDeque<(BusEventSource<ChannelId>, MSG)>>>,
+pub struct BusLegSender<ChannelId, MSG, const STATIC_SIZE: usize> {
+    queue: Arc<Mutex<DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>>>,
 }
 
-impl<ChannelId, MSG> Clone for BusLegSender<ChannelId, MSG> {
+impl<ChannelId, MSG, const STATIC_SIZE: usize> Clone for BusLegSender<ChannelId, MSG, STATIC_SIZE> {
     fn clone(&self) -> Self {
         Self {
             queue: self.queue.clone(),
@@ -35,7 +33,7 @@ impl<ChannelId, MSG> Clone for BusLegSender<ChannelId, MSG> {
     }
 }
 
-impl<ChannelId, MSG> BusLegSender<ChannelId, MSG> {
+impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegSender<ChannelId, MSG, STATIC_SIZE> {
     /// Sends a message through the bus leg.
     ///
     /// # Arguments
@@ -50,13 +48,13 @@ impl<ChannelId, MSG> BusLegSender<ChannelId, MSG> {
     pub fn send(
         &self,
         source: BusEventSource<ChannelId>,
+        safe: bool,
         msg: MSG,
     ) -> Result<usize, BusLegSenderErr> {
         let mut queue = self.queue.lock();
-        if queue.len() >= BUS_CHANNEL_SIZE_LIMIT {
-            return Err(BusLegSenderErr::ChannelFull);
-        }
-        queue.push_back((source, msg));
+        queue
+            .push_back(safe, (source, msg))
+            .map_err(|_| BusLegSenderErr::ChannelFull)?;
         Ok(queue.len())
     }
 }
@@ -65,11 +63,11 @@ impl<ChannelId, MSG> BusLegSender<ChannelId, MSG> {
 ///
 /// This struct is used to receive messages from a bus leg. It holds a queue of messages
 /// that have been sent to the bus leg.
-pub struct BusLegReceiver<ChannelId, MSG> {
-    queue: Arc<Mutex<VecDeque<(BusEventSource<ChannelId>, MSG)>>>,
+pub struct BusLegReceiver<ChannelId, MSG, const STATIC_SIZE: usize> {
+    queue: Arc<Mutex<DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>>>,
 }
 
-impl<ChannelId, MSG> BusLegReceiver<ChannelId, MSG> {
+impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegReceiver<ChannelId, MSG, STATIC_SIZE> {
     /// Receives a message from the bus leg.
     ///
     /// # Returns
@@ -87,9 +85,11 @@ impl<ChannelId, MSG> BusLegReceiver<ChannelId, MSG> {
 /// # Returns
 ///
 /// Returns a tuple `(sender, receiver)` where `sender` is a `BusLegSender` and `receiver` is a `BusLegReceiver`.
-pub fn create_bus_leg<ChannelId, MSG>(
-) -> (BusLegSender<ChannelId, MSG>, BusLegReceiver<ChannelId, MSG>) {
-    let queue = Arc::new(Mutex::new(VecDeque::with_capacity(BUS_CHANNEL_PRE_ALOC)));
+pub fn create_bus_leg<ChannelId, MSG, const STATIC_SIZE: usize>() -> (
+    BusLegSender<ChannelId, MSG, STATIC_SIZE>,
+    BusLegReceiver<ChannelId, MSG, STATIC_SIZE>,
+) {
+    let queue = Arc::new(Mutex::new(DynamicDeque::new()));
     let sender = BusLegSender {
         queue: queue.clone(),
     };

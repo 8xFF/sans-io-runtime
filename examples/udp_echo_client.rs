@@ -1,12 +1,11 @@
 use std::{
-    collections::VecDeque,
     net::SocketAddr,
     time::{Duration, Instant},
 };
 
 use sans_io_runtime::{
-    Controller, MioBackend, NetIncoming, NetOutgoing, Owner, Task, TaskGroup, TaskGroupOutput,
-    TaskInput, TaskOutput, WorkerCtx, WorkerInner, WorkerInnerOutput,
+    Controller, ErrorDebugger, MioBackend, NetIncoming, NetOutgoing, Owner, Task, TaskGroup,
+    TaskGroupOutput, TaskInput, TaskOutput, WorkerCtx, WorkerInner, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -29,6 +28,7 @@ enum EchoTaskMultiCfg {
     Type2(EchoTaskCfg),
 }
 
+#[derive(Debug)]
 enum EchoTaskInQueue {
     UdpListen(SocketAddr),
     SendUdpPacket {
@@ -43,25 +43,29 @@ enum EchoTaskInQueue {
 struct EchoTask<const FAKE_TYPE: u16> {
     count: usize,
     cfg: EchoTaskCfg,
-    buffers: [[u8; 1500]; 512],
+    buffers: [[u8; 1500]; 16],
     buffer_index: usize,
     local_addr: SocketAddr,
-    output: VecDeque<EchoTaskInQueue>,
+    output: heapless::Deque<EchoTaskInQueue, 16>,
 }
 
 impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo client task in addr {}", cfg.dest);
+        let mut output = heapless::Deque::new();
+        output
+            .push_back(EchoTaskInQueue::UdpListen(SocketAddr::from((
+                [127, 0, 0, 1],
+                0,
+            ))))
+            .expect("should not happend");
         Self {
             count: 0,
             cfg,
-            buffers: [[0; 1500]; 512],
+            buffers: [[0; 1500]; 16],
             buffer_index: 0,
             local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-            output: VecDeque::from([EchoTaskInQueue::UdpListen(SocketAddr::from((
-                [127, 0, 0, 1],
-                0,
-            )))]),
+            output,
         }
     }
 }
@@ -78,12 +82,14 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
                 if let Ok(addr) = result {
                     self.local_addr = addr;
                     for _ in 0..self.cfg.brust_size {
-                        self.output.push_back(EchoTaskInQueue::SendUdpPacket {
-                            from: self.local_addr,
-                            to: self.cfg.dest,
-                            buf_index: self.buffer_index,
-                            len: 1000,
-                        });
+                        self.output
+                            .push_back(EchoTaskInQueue::SendUdpPacket {
+                                from: self.local_addr,
+                                to: self.cfg.dest,
+                                buf_index: self.buffer_index,
+                                len: 1000,
+                            })
+                            .print_err("Output queue full");
                         self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
                     }
                 }
@@ -95,16 +101,20 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
                 self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
                 self.buffers[buffer_index][0..data.len()].copy_from_slice(data);
 
-                self.output.push_back(EchoTaskInQueue::SendUdpPacket {
-                    from: to,
-                    to: from,
-                    buf_index: buffer_index,
-                    len: data.len(),
-                });
+                self.output
+                    .push_back(EchoTaskInQueue::SendUdpPacket {
+                        from: to,
+                        to: from,
+                        buf_index: buffer_index,
+                        len: data.len(),
+                    })
+                    .print_err("Output queue full");
 
                 if self.count == self.cfg.count {
                     log::info!("Destroying task");
-                    self.output.push_back(EchoTaskInQueue::Destroy);
+                    self.output
+                        .push_back(EchoTaskInQueue::Destroy)
+                        .print_err("Output queue full");
                 }
             }
             _ => unreachable!("EchoTask only has NetIncoming variants"),
@@ -132,8 +142,8 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<ChannelId, Event, EchoTask<1>, 16>,
-    echo_type2: TaskGroup<ChannelId, Event, EchoTask<2>, 16>,
+    echo_type1: TaskGroup<ChannelId, Event, EchoTask<1>, 16, 1024>,
+    echo_type2: TaskGroup<ChannelId, Event, EchoTask<2>, 16, 1024>,
 }
 
 impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
@@ -145,7 +155,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
         self.worker
     }
 
-    fn build(worker: u16, _cfg: ()) -> Self {
+    fn build(worker: u16, _cfg: ICfg) -> Self {
         Self {
             worker,
             echo_type1: TaskGroup::new(worker),
@@ -156,14 +166,10 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn spawn(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, cfg: SCfg) {
         match cfg {
             EchoTaskMultiCfg::Type1(cfg) => {
-                self.echo_type1
-                    .add_task(EchoTask::new(cfg))
-                    .expect("should add task");
+                self.echo_type1.add_task(EchoTask::new(cfg));
             }
             EchoTaskMultiCfg::Type2(cfg) => {
-                self.echo_type2
-                    .add_task(EchoTask::new(cfg))
-                    .expect("should add task");
+                self.echo_type2.add_task(EchoTask::new(cfg));
             }
         }
     }
@@ -222,18 +228,20 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, EchoTaskMultiCfg, ChannelId, Event>::new();
-    controller.add_worker::<_, EchoWorkerInner, MioBackend>(());
-    controller.add_worker::<_, EchoWorkerInner, MioBackend>(());
+    println!("{}", std::mem::size_of::<EchoWorkerInner>());
+    let mut controller =
+        Controller::<ExtIn, ExtOut, EchoTaskMultiCfg, ChannelId, Event, 1024>::new();
+    controller.add_worker::<_, EchoWorkerInner, MioBackend<256, 1024>>((), None);
+    controller.add_worker::<_, EchoWorkerInner, MioBackend<256, 1024>>((), None);
 
-    for _i in 0..10 {
+    for _i in 0..100 {
         controller.spawn(EchoTaskMultiCfg::Type1(EchoTaskCfg {
-            count: 1000,
+            count: 10000,
             brust_size: 1,
             dest: SocketAddr::from(([127, 0, 0, 1], 10001)),
         }));
         controller.spawn(EchoTaskMultiCfg::Type2(EchoTaskCfg {
-            count: 10000,
+            count: 100000,
             brust_size: 1,
             dest: SocketAddr::from(([127, 0, 0, 1], 10002)),
         }));

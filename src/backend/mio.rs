@@ -1,12 +1,11 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    net::SocketAddr,
-    time::Duration,
-};
+use std::{net::SocketAddr, time::Duration, usize};
 
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};
 
-use crate::{owner::Owner, BackendOwner, NetIncoming, NetOutgoing};
+use crate::{
+    collections::DynamicDeque, owner::Owner, trace::ErrorDebugger, BackendOwner, ErrorDebugger2,
+    NetIncoming, NetOutgoing,
+};
 
 use super::Backend;
 
@@ -22,6 +21,7 @@ struct UdpContainer<Owner> {
     owner: Owner,
 }
 
+#[derive(Debug)]
 enum InQueue<Owner> {
     UdpData {
         owner: Owner,
@@ -37,23 +37,25 @@ enum InQueue<Owner> {
     },
 }
 
-pub struct MioBackend {
+pub struct MioBackend<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> {
     poll: Poll,
     event_buffer: Events,
-    udp_sockets: HashMap<Token, UdpContainer<Owner>>,
-    output: VecDeque<InQueue<Owner>>,
+    udp_sockets: heapless::FnvIndexMap<Token, UdpContainer<Owner>, SOCKET_LIMIT>,
+    output: DynamicDeque<InQueue<Owner>, QUEUE_SIZE>,
     buffers: [[u8; 1500]; QUEUE_PKT_NUM],
     buffer_index: usize,
     buffer_inqueue_count: usize,
 }
 
-impl Default for MioBackend {
+impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> Default
+    for MioBackend<SOCKET_LIMIT, QUEUE_SIZE>
+{
     fn default() -> Self {
         Self {
             poll: Poll::new().expect("should create mio-poll"),
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
-            udp_sockets: HashMap::new(),
-            output: VecDeque::new(),
+            udp_sockets: heapless::FnvIndexMap::new(),
+            output: DynamicDeque::new(),
             buffers: [[0; 1500]; QUEUE_PKT_NUM],
             buffer_index: 0,
             buffer_inqueue_count: 0,
@@ -61,7 +63,9 @@ impl Default for MioBackend {
     }
 }
 
-impl Backend for MioBackend {
+impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> Backend
+    for MioBackend<SOCKET_LIMIT, QUEUE_SIZE>
+{
     fn pop_incoming(&mut self, timeout: Duration) -> Option<(NetIncoming, Owner)> {
         loop {
             if let Some(wait) = self.output.pop_front() {
@@ -108,13 +112,16 @@ impl Backend for MioBackend {
                         socket.socket.recv_from(&mut self.buffers[buffer_index])
                     {
                         self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
-                        self.output.push_back(InQueue::UdpData {
-                            owner: socket.owner,
-                            from: addr,
-                            to: socket.local_addr,
-                            buffer_index,
-                            buffer_size,
-                        });
+                        self.output
+                            .push_back_stack(InQueue::UdpData {
+                                owner: socket.owner,
+                                from: addr,
+                                to: socket.local_addr,
+                                buffer_index,
+                                buffer_size,
+                            })
+                            .print_err("MioBackend output queue full");
+
                         self.buffer_inqueue_count += 1;
                         if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
                             log::warn!("Mio backend buffer full");
@@ -135,7 +142,9 @@ impl Backend for MioBackend {
     fn finish_incoming_cycle(&mut self) {}
 }
 
-impl BackendOwner for MioBackend {
+impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
+    for MioBackend<SOCKET_LIMIT, QUEUE_SIZE>
+{
     fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
             NetOutgoing::UdpListen(addr) => {
@@ -156,23 +165,25 @@ impl BackendOwner for MioBackend {
                             log::error!("Mio register error {:?}", e);
                             return;
                         }
-                        self.output.push_back(InQueue::UdpListenResult {
+                        self.output.push_back_safe(InQueue::UdpListenResult {
                             owner,
                             bind: addr,
                             result: Ok(local_addr),
                         });
-                        self.udp_sockets.insert(
-                            token,
-                            UdpContainer {
-                                socket,
-                                local_addr,
-                                owner,
-                            },
-                        );
+                        self.udp_sockets
+                            .insert(
+                                token,
+                                UdpContainer {
+                                    socket,
+                                    local_addr,
+                                    owner,
+                                },
+                            )
+                            .print_err2("MioBackend udp_sockets full");
                     }
                     Err(e) => {
                         log::error!("Mio bind error {:?}", e);
-                        self.output.push_back(InQueue::UdpListenResult {
+                        self.output.push_back_safe(InQueue::UdpListenResult {
                             owner,
                             bind: addr,
                             result: Err(e),

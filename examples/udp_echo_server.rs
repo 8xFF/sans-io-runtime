@@ -114,13 +114,19 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event>::new();
-    controller.add_worker::<_, EchoWorker, MioBackend>(EchoWorkerCfg {
-        bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
-    });
-    controller.add_worker::<_, EchoWorker, MioBackend>(EchoWorkerCfg {
-        bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
-    });
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::new();
+    controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
+        EchoWorkerCfg {
+            bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
+        },
+        None,
+    );
+    controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
+        EchoWorkerCfg {
+            bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
+        },
+        None,
+    );
     loop {
         controller.process();
         std::thread::sleep(Duration::from_millis(100));

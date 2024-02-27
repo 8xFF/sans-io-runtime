@@ -41,7 +41,8 @@ pub enum WorkerInnerOutput<'a, ExtOut, ChannelId, Event> {
     Net(Owner, NetOutgoing<'a>),
     Bus(Owner, BusEvent<ChannelId, Event>),
     DestroyOwner(Owner),
-    Ext(ExtOut),
+    /// First bool is message need to safe to send or not, second is the message
+    Ext(bool, ExtOut),
 }
 
 pub struct WorkerCtx<'a> {
@@ -76,13 +77,14 @@ pub(crate) struct Worker<
     ICfg,
     SCfg: Clone,
     B: Backend,
+    const INNER_BUS_STACK: usize,
 > {
     inner: Inner,
     bus_local_hub: BusLocalHub<ChannelId>,
-    inner_bus: BusWorker<ChannelId, Event>,
+    inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
     backend: B,
-    worker_out: BusWorker<u16, WorkerControlOut<ExtOut>>,
-    worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>>,
+    worker_out: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
+    worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
     _tmp: std::marker::PhantomData<(Owner, ICfg)>,
 }
 
@@ -95,13 +97,14 @@ impl<
         B: Backend,
         ICfg,
         SCfg: Clone,
-    > Worker<ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B>
+        const INNER_BUS_STACK: usize,
+    > Worker<ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B, INNER_BUS_STACK>
 {
     pub fn new(
         inner: Inner,
-        inner_bus: BusWorker<ChannelId, Event>,
-        worker_out: BusWorker<u16, WorkerControlOut<ExtOut>>,
-        worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>>,
+        inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
+        worker_out: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
+        worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
     ) -> Self {
         Self {
             inner,
@@ -132,7 +135,10 @@ impl<
                         tasks: self.inner.tasks(),
                         ultilization: 0, //TODO measure this thread ultilization
                     };
-                    if let Err(e) = self.worker_out.send(0, WorkerControlOut::Stats(stats)) {
+                    if let Err(e) = self
+                        .worker_out
+                        .send(0, true, WorkerControlOut::Stats(stats))
+                    {
                         log::error!("Failed to send stats: {:?}", e);
                     }
                 }
@@ -183,12 +189,13 @@ impl<
                             self.inner_bus.unsubscribe(channel);
                         }
                     }
-                    BusEvent::ChannelPublish(channel, msg) => {
-                        self.inner_bus.publish(channel, msg);
+                    BusEvent::ChannelPublish(channel, safe, msg) => {
+                        self.inner_bus.publish(channel, safe, msg);
                     }
                 },
-                WorkerInnerOutput::Ext(ext) => {
-                    if let Err(e) = self.worker_out.send(0, WorkerControlOut::Ext(ext)) {
+                WorkerInnerOutput::Ext(safe, ext) => {
+                    // TODO dont hardcode 0
+                    if let Err(e) = self.worker_out.send(0, safe, WorkerControlOut::Ext(ext)) {
                         log::error!("Failed to send external: {:?}", e);
                     }
                 }

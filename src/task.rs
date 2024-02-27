@@ -1,6 +1,10 @@
-use std::{array, collections::VecDeque, hash::Hash, net::SocketAddr, time::Instant};
+use std::{hash::Hash, net::SocketAddr, time::Instant};
 
-use crate::{owner::Owner, BusEvent, WorkerCtx};
+use crate::{
+    collections::{DynamicDeque, DynamicVec},
+    owner::Owner,
+    BusEvent, ErrorDebugger2, WorkerCtx,
+};
 
 pub enum NetIncoming<'a> {
     UdpListenResult {
@@ -34,12 +38,6 @@ pub enum TaskOutput<'a, ChannelId, Event> {
     Destroy,
 }
 
-#[derive(Debug)]
-pub enum TaskGroupError {
-    TaskNotFound,
-    TaskFull,
-}
-
 pub trait Task<ChannelId, Event> {
     const TYPE: u16;
     fn on_tick(&mut self, now: Instant);
@@ -56,11 +54,12 @@ pub struct TaskGroup<
     ChannelId: Hash + Eq + PartialEq,
     Event,
     T: Task<ChannelId, Event>,
-    const MAX_TASKS: usize,
+    const STACK_SIZE: usize,
+    const QUEUE_SIZE: usize,
 > {
     worker: u16,
-    tasks: [Option<T>; MAX_TASKS],
-    output: VecDeque<TaskGroupOutput<ChannelId, Event>>,
+    tasks: DynamicVec<Option<T>, STACK_SIZE>,
+    output: DynamicDeque<TaskGroupOutput<ChannelId, Event>, QUEUE_SIZE>,
 }
 
 impl<
@@ -68,13 +67,14 @@ impl<
         Event,
         T: Task<ChannelId, Event>,
         const MAX_TASKS: usize,
-    > TaskGroup<ChannelId, Event, T, MAX_TASKS>
+        const QUEUE_SIZE: usize,
+    > TaskGroup<ChannelId, Event, T, MAX_TASKS, QUEUE_SIZE>
 {
     pub fn new(worker: u16) -> Self {
         Self {
             worker,
-            tasks: array::from_fn(|_| None),
-            output: VecDeque::new(),
+            tasks: DynamicVec::new(),
+            output: DynamicDeque::new(),
         }
     }
 
@@ -82,15 +82,15 @@ impl<
         self.tasks.len()
     }
 
-    pub fn add_task(&mut self, task: T) -> Result<(), TaskGroupError> {
+    pub fn add_task(&mut self, task: T) {
         for slot in self.tasks.iter_mut() {
             if slot.is_none() {
                 *slot = Some(task);
-                return Ok(());
+                return;
             }
         }
 
-        Err(TaskGroupError::TaskFull)
+        self.tasks.push_safe(Some(task));
     }
 
     pub fn on_bus(
@@ -101,14 +101,16 @@ impl<
         channel_id: ChannelId,
         event: Event,
     ) {
-        self.tasks[owner.task_index().expect("on_bus only allow task owner")]
+        self.tasks
+            .get_mut_or_panic(owner.task_index().expect("on_bus only allow task owner"))
             .as_mut()
             .expect("should have task")
             .on_input(now, TaskInput::Bus(channel_id, event));
     }
 
     pub fn on_net(&mut self, now: Instant, owner: Owner, net: NetIncoming) {
-        self.tasks[owner.task_index().expect("on_bus only allow task owner")]
+        self.tasks
+            .get_mut_or_panic(owner.task_index().expect("on_bus only allow task owner"))
             .as_mut()
             .expect("should have task")
             .on_input(now, TaskInput::Net(net));
@@ -129,10 +131,15 @@ impl<
                             .on_action(Owner::task(self.worker, T::TYPE, index), out);
                     }
                     TaskOutput::Bus(event) => {
-                        self.output.push_back(TaskGroupOutput::Bus(
-                            Owner::task(self.worker, T::TYPE, index),
-                            event,
-                        ));
+                        self.output
+                            .push_back(
+                                event.high_priority(),
+                                TaskGroupOutput::Bus(
+                                    Owner::task(self.worker, T::TYPE, index),
+                                    event,
+                                ),
+                            )
+                            .print_err2("queue full");
                     }
                     TaskOutput::Destroy => {
                         destroyed = true;
@@ -142,7 +149,7 @@ impl<
             if destroyed {
                 *slot = None;
                 self.output
-                    .push_back(TaskGroupOutput::DestroyOwner(Owner::task(
+                    .push_back_safe(TaskGroupOutput::DestroyOwner(Owner::task(
                         self.worker,
                         T::TYPE,
                         index,

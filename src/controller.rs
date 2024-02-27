@@ -7,16 +7,25 @@ use crate::{
     BusWorker,
 };
 
+const DEFAULT_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 struct WorkerContainer {
     _join: std::thread::JoinHandle<()>,
     stats: WorkerStats,
 }
 
-pub struct Controller<ExtIn: Clone, ExtOut: Clone, SCfg: Clone, ChannelId, Event> {
-    worker_inner_bus: BusSystemBuilder<ChannelId, Event>,
-    worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>>,
-    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>>,
-    worker_event: BusWorker<u16, WorkerControlOut<ExtOut>>,
+pub struct Controller<
+    ExtIn: Clone,
+    ExtOut: Clone,
+    SCfg: Clone,
+    ChannelId,
+    Event,
+    const INNER_BUS_STACK: usize,
+> {
+    worker_inner_bus: BusSystemBuilder<ChannelId, Event, INNER_BUS_STACK>,
+    worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
+    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>, 16>,
+    worker_event: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
     worker_threads: Vec<WorkerContainer>,
 }
 
@@ -26,7 +35,8 @@ impl<
         SCfg: 'static + Send + Sync + Clone,
         ChannelId: 'static + Debug + Clone + Copy + Hash + PartialEq + Eq + Send + Sync,
         Event: 'static + Send + Sync + Clone,
-    > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event>
+        const INNER_BUS_STACK: usize,
+    > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event, INNER_BUS_STACK>
 {
     pub fn new() -> Self {
         let worker_control_bus = BusSystemBuilder::default();
@@ -49,23 +59,38 @@ impl<
     >(
         &mut self,
         cfg: ICfg,
+        stack_size: Option<usize>,
     ) {
         let worker_in = self.worker_control_bus.new_worker();
         let worker_out = self.worker_event_bus.new_worker();
         let worker_inner = self.worker_inner_bus.new_worker();
 
-        let join = std::thread::spawn(move || {
-            let mut worker =
-                worker::Worker::<ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B>::new(
+        let stack_size = stack_size.unwrap_or(DEFAULT_STACK_SIZE);
+        log::info!("create worker with stack size: {}", stack_size);
+        let join = std::thread::Builder::new()
+            .stack_size(stack_size)
+            .spawn(move || {
+                let mut worker = worker::Worker::<
+                    ExtIn,
+                    ExtOut,
+                    ChannelId,
+                    Event,
+                    Inner,
+                    ICfg,
+                    SCfg,
+                    B,
+                    INNER_BUS_STACK,
+                >::new(
                     Inner::build(worker_in.leg_index() as u16, cfg),
                     worker_inner,
                     worker_out,
                     worker_in,
                 );
-            loop {
-                worker.process();
-            }
-        });
+                loop {
+                    worker.process();
+                }
+            })
+            .expect("Should spawn worker thread");
         self.worker_threads.push(WorkerContainer {
             _join: join,
             stats: Default::default(),
@@ -74,7 +99,7 @@ impl<
 
     pub fn process(&mut self) {
         self.worker_control_bus
-            .broadcast(WorkerControlIn::StatsRequest);
+            .broadcast(true, WorkerControlIn::StatsRequest);
         while let Some((source, event)) = self.worker_event.recv() {
             match (source, event) {
                 (BusEventSource::Direct(source_leg), WorkerControlOut::Stats(stats)) => {
@@ -102,7 +127,7 @@ impl<
         self.worker_threads[best_worker].stats.tasks += 1;
         if let Err(e) = self
             .worker_control_bus
-            .send(best_worker, WorkerControlIn::Spawn(cfg))
+            .send(best_worker, true, WorkerControlIn::Spawn(cfg))
         {
             log::error!("Failed to spawn task: {:?}", e);
         }
