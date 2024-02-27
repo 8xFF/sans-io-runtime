@@ -23,7 +23,7 @@ impl<T, E> ErrorDebugger2 for Result<T, E> {
     fn print_err2(&self, msg: &str) {
         match self {
             Ok(_) => {}
-            Err(e) => {
+            Err(_) => {
                 log::error!("Error, {msg}");
             }
         }

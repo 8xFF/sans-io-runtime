@@ -5,6 +5,7 @@ pub struct DynamicDeque<T, const STACK_SIZE: usize> {
     heap: VecDeque<T>,
 }
 
+#[allow(unused)]
 impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
     pub fn new() -> Self {
         Self {
@@ -65,6 +66,7 @@ pub struct DynamicVec<T, const STACK_SIZE: usize> {
     heap: Vec<T>,
 }
 
+#[allow(unused)]
 impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
     pub fn new() -> Self {
         Self {
