@@ -5,14 +5,16 @@ use std::{
 };
 
 use sans_io_runtime::{
-    Controller, MioBackend, NetIncoming, NetOutgoing, Task, TaskGroup, TaskGroupOutput, TaskInput,
-    TaskOutput, WorkerInner,
+    Controller, MioBackend, NetIncoming, NetOutgoing, Owner, Task, TaskGroup, TaskGroupOutput,
+    TaskInput, TaskOutput, WorkerCtx, WorkerInner, WorkerInnerOutput,
 };
 
 type ExtIn = ();
 type ExtOut = ();
 type ICfg = ();
 type SCfg = EchoTaskMultiCfg;
+type ChannelId = ();
+type Event = ();
 
 #[derive(Debug, Clone)]
 struct EchoTaskCfg {
@@ -38,7 +40,7 @@ enum EchoTaskInQueue {
     Destroy,
 }
 
-struct EchoTask<const FakeType: u16> {
+struct EchoTask<const FAKE_TYPE: u16> {
     count: usize,
     cfg: EchoTaskCfg,
     buffers: [[u8; 1500]; 512],
@@ -47,7 +49,7 @@ struct EchoTask<const FakeType: u16> {
     output: VecDeque<EchoTaskInQueue>,
 }
 
-impl<const FakeType: u16> EchoTask<FakeType> {
+impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo client task in addr {}", cfg.dest);
         Self {
@@ -64,12 +66,12 @@ impl<const FakeType: u16> EchoTask<FakeType> {
     }
 }
 
-impl<const FakeType: u16> Task<ExtIn, ExtOut> for EchoTask<FakeType> {
-    const TYPE: u16 = FakeType;
+impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
+    const TYPE: u16 = FAKE_TYPE;
 
     fn on_tick(&mut self, _now: Instant) {}
 
-    fn on_input<'b>(&mut self, _now: Instant, input: TaskInput<'b, ExtIn>) {
+    fn on_input<'b>(&mut self, _now: Instant, input: TaskInput<'b, ChannelId, Event>) {
         match input {
             TaskInput::Net(NetIncoming::UdpListenResult { bind, result }) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
@@ -109,7 +111,7 @@ impl<const FakeType: u16> Task<ExtIn, ExtOut> for EchoTask<FakeType> {
         }
     }
 
-    fn pop_output(&mut self, _now: Instant) -> Option<TaskOutput<'_, ExtOut>> {
+    fn pop_output(&mut self, _now: Instant) -> Option<TaskOutput<'_, ChannelId, Event>> {
         let out = self.output.pop_front()?;
         match out {
             EchoTaskInQueue::UdpListen(bind) => Some(TaskOutput::Net(NetOutgoing::UdpListen(bind))),
@@ -130,13 +132,17 @@ impl<const FakeType: u16> Task<ExtIn, ExtOut> for EchoTask<FakeType> {
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<ExtIn, ExtOut, EchoTask<1>>,
-    echo_type2: TaskGroup<ExtIn, ExtOut, EchoTask<2>>,
+    echo_type1: TaskGroup<ChannelId, Event, EchoTask<1>, 16>,
+    echo_type2: TaskGroup<ChannelId, Event, EchoTask<2>, 16>,
 }
 
-impl WorkerInner<ExtIn, ExtOut, ICfg, SCfg> for EchoWorkerInner {
+impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
     fn tasks(&self) -> usize {
         self.echo_type1.tasks() + self.echo_type2.tasks()
+    }
+
+    fn worker_index(&self) -> u16 {
+        self.worker
     }
 
     fn build(worker: u16, _cfg: ()) -> Self {
@@ -147,22 +153,36 @@ impl WorkerInner<ExtIn, ExtOut, ICfg, SCfg> for EchoWorkerInner {
         }
     }
 
-    fn spawn(&mut self, _now: Instant, _ctx: &mut sans_io_runtime::WorkerCtx<'_>, cfg: SCfg) {
+    fn spawn(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, cfg: SCfg) {
         match cfg {
             EchoTaskMultiCfg::Type1(cfg) => {
-                self.echo_type1.add_task(EchoTask::new(cfg));
+                self.echo_type1
+                    .add_task(EchoTask::new(cfg))
+                    .expect("should add task");
             }
             EchoTaskMultiCfg::Type2(cfg) => {
-                self.echo_type2.add_task(EchoTask::new(cfg));
+                self.echo_type2
+                    .add_task(EchoTask::new(cfg))
+                    .expect("should add task");
             }
         }
     }
 
-    fn on_ext(&mut self, now: Instant, ctx: &mut sans_io_runtime::WorkerCtx<'_>, ext: ExtIn) {
+    fn on_ext(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _ext: ExtIn) {
         todo!()
     }
 
-    fn on_net(&mut self, now: Instant, owner: sans_io_runtime::Owner, net: NetIncoming) {
+    fn on_bus(
+        &mut self,
+        _now: Instant,
+        _ctx: &mut WorkerCtx<'_>,
+        _owner: Owner,
+        _channel_id: ChannelId,
+        _event: Event,
+    ) {
+    }
+
+    fn on_net(&mut self, now: Instant, owner: Owner, net: NetIncoming) {
         match owner.group_id() {
             Some(1) => {
                 self.echo_type1.on_net(now, owner, net);
@@ -174,27 +194,25 @@ impl WorkerInner<ExtIn, ExtOut, ICfg, SCfg> for EchoWorkerInner {
         }
     }
 
-    fn inner_process(&mut self, now: Instant, ctx: &mut sans_io_runtime::WorkerCtx<'_>) {
+    fn inner_process(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>) {
         self.echo_type1.inner_process(now, ctx);
         self.echo_type2.inner_process(now, ctx);
     }
 
-    fn pop_output(&mut self) -> Option<sans_io_runtime::WorkerInnerOutput<'_, ExtOut>> {
+    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut, ChannelId, Event>> {
         if let Some(event) = self.echo_type1.pop_output() {
             match event {
-                TaskGroupOutput::Net(net) => Some(sans_io_runtime::WorkerInnerOutput::Net(
-                    net,
-                    sans_io_runtime::Owner::worker(self.worker),
-                )),
-                TaskGroupOutput::External(_) => None,
+                TaskGroupOutput::Bus(owner, event) => Some(WorkerInnerOutput::Bus(owner, event)),
+                TaskGroupOutput::DestroyOwner(owner) => {
+                    Some(WorkerInnerOutput::DestroyOwner(owner))
+                }
             }
         } else if let Some(event) = self.echo_type2.pop_output() {
             match event {
-                TaskGroupOutput::Net(net) => Some(sans_io_runtime::WorkerInnerOutput::Net(
-                    net,
-                    sans_io_runtime::Owner::worker(self.worker),
-                )),
-                TaskGroupOutput::External(_) => None,
+                TaskGroupOutput::Bus(owner, event) => Some(WorkerInnerOutput::Bus(owner, event)),
+                TaskGroupOutput::DestroyOwner(owner) => {
+                    Some(WorkerInnerOutput::DestroyOwner(owner))
+                }
             }
         } else {
             None
@@ -204,11 +222,11 @@ impl WorkerInner<ExtIn, ExtOut, ICfg, SCfg> for EchoWorkerInner {
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, EchoTaskMultiCfg>::new();
+    let mut controller = Controller::<ExtIn, ExtOut, EchoTaskMultiCfg, ChannelId, Event>::new();
     controller.add_worker::<_, EchoWorkerInner, MioBackend>(());
     controller.add_worker::<_, EchoWorkerInner, MioBackend>(());
 
-    for i in 0..10 {
+    for _i in 0..10 {
         controller.spawn(EchoTaskMultiCfg::Type1(EchoTaskCfg {
             count: 1000,
             brust_size: 1,

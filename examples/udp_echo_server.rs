@@ -11,6 +11,9 @@ use sans_io_runtime::{
 
 type ExtIn = ();
 type ExtOut = ();
+type ChannelId = ();
+type Event = ();
+type ICfg = EchoWorkerCfg;
 type SCfg = ();
 
 struct EchoWorkerCfg {
@@ -34,7 +37,7 @@ struct EchoWorker {
     output: VecDeque<EchoWorkerInQueue>,
 }
 
-impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, ()> for EchoWorker {
+impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     fn build(worker: u16, cfg: EchoWorkerCfg) -> Self {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
@@ -45,12 +48,25 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, ()> for EchoWorker {
         }
     }
 
+    fn worker_index(&self) -> u16 {
+        self.worker
+    }
+
     fn tasks(&self) -> usize {
         1
     }
 
     fn spawn(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _cfg: SCfg) {}
     fn on_ext(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _ext: ExtIn) {}
+    fn on_bus(
+        &mut self,
+        _now: Instant,
+        _ctx: &mut WorkerCtx<'_>,
+        _owner: Owner,
+        _channel_id: ChannelId,
+        _event: Event,
+    ) {
+    }
     fn on_net(&mut self, _now: Instant, _owner: Owner, input: NetIncoming) {
         match input {
             NetIncoming::UdpListenResult { bind, result } => {
@@ -72,12 +88,12 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, ()> for EchoWorker {
         }
     }
     fn inner_process(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>) {}
-    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut>> {
+    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut, ChannelId, Event>> {
         let out = self.output.pop_front()?;
         match out {
             EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Net(
-                NetOutgoing::UdpListen(bind),
                 Owner::worker(self.worker),
+                NetOutgoing::UdpListen(bind),
             )),
             EchoWorkerInQueue::SendUdpPacket {
                 from,
@@ -85,12 +101,12 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, ()> for EchoWorker {
                 buf_index,
                 len,
             } => Some(WorkerInnerOutput::Net(
+                Owner::worker(self.worker),
                 NetOutgoing::UdpPacket {
                     from,
                     to,
                     data: &self.buffers[buf_index][0..len],
                 },
-                Owner::worker(self.worker),
             )),
         }
     }
@@ -98,7 +114,7 @@ impl WorkerInner<ExtIn, ExtOut, EchoWorkerCfg, ()> for EchoWorker {
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg>::new();
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event>::new();
     controller.add_worker::<_, EchoWorker, MioBackend>(EchoWorkerCfg {
         bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
     });

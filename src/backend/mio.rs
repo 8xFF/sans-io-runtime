@@ -136,7 +136,7 @@ impl Backend for MioBackend {
 }
 
 impl BackendOwner for MioBackend {
-    fn on_action(&mut self, action: NetOutgoing, owner: Owner) {
+    fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
             NetOutgoing::UdpListen(addr) => {
                 assert!(
@@ -206,14 +206,6 @@ impl BackendOwner for MioBackend {
         }
         for token in tokens {
             self.udp_sockets.remove(&token);
-        }
-    }
-
-    fn swap_owner(&mut self, from: Owner, to: Owner) {
-        for (_, socket) in self.udp_sockets.iter_mut() {
-            if socket.owner == from {
-                socket.owner = to;
-            }
         }
     }
 }

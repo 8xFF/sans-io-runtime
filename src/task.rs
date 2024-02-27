@@ -1,6 +1,6 @@
-use std::{net::SocketAddr, time::Instant};
+use std::{array, collections::VecDeque, hash::Hash, net::SocketAddr, time::Instant};
 
-use crate::{owner::Owner, WorkerCtx};
+use crate::{owner::Owner, BusEvent, WorkerCtx};
 
 pub enum NetIncoming<'a> {
     UdpListenResult {
@@ -23,41 +23,58 @@ pub enum NetOutgoing<'a> {
     },
 }
 
-pub enum TaskInput<'a, Ext> {
+pub enum TaskInput<'a, ChannelId, Event> {
     Net(NetIncoming<'a>),
-    External(Ext),
+    Bus(ChannelId, Event),
 }
 
-pub enum TaskOutput<'a, Ext> {
+pub enum TaskOutput<'a, ChannelId, Event> {
     Net(NetOutgoing<'a>),
-    External(Ext),
+    Bus(BusEvent<ChannelId, Event>),
     Destroy,
 }
 
-pub trait Task<ExtIn, ExtOut> {
+#[derive(Debug)]
+pub enum TaskGroupError {
+    TaskNotFound,
+    TaskFull,
+}
+
+pub trait Task<ChannelId, Event> {
     const TYPE: u16;
     fn on_tick(&mut self, now: Instant);
-    fn on_input<'a>(&mut self, now: Instant, input: TaskInput<'a, ExtIn>);
-    fn pop_output(&mut self, now: Instant) -> Option<TaskOutput<'_, ExtOut>>;
+    fn on_input<'a>(&mut self, now: Instant, input: TaskInput<'a, ChannelId, Event>);
+    fn pop_output(&mut self, now: Instant) -> Option<TaskOutput<'_, ChannelId, Event>>;
 }
 
-pub enum TaskGroupOutput<'a, Ext> {
-    Net(NetOutgoing<'a>),
-    External(Ext),
+pub enum TaskGroupOutput<ChannelId, EventOut> {
+    Bus(Owner, BusEvent<ChannelId, EventOut>),
+    DestroyOwner(Owner),
 }
 
-pub struct TaskGroup<ExtIn, ExtOut, T: Task<ExtIn, ExtOut>> {
+pub struct TaskGroup<
+    ChannelId: Hash + Eq + PartialEq,
+    Event,
+    T: Task<ChannelId, Event>,
+    const MAX_TASKS: usize,
+> {
     worker: u16,
-    tasks: Vec<T>,
-    _tmp: std::marker::PhantomData<(ExtIn, ExtOut)>,
+    tasks: [Option<T>; MAX_TASKS],
+    output: VecDeque<TaskGroupOutput<ChannelId, Event>>,
 }
 
-impl<ExtIn, ExtOut, T: Task<ExtIn, ExtOut>> TaskGroup<ExtIn, ExtOut, T> {
+impl<
+        ChannelId: Hash + Eq + PartialEq,
+        Event,
+        T: Task<ChannelId, Event>,
+        const MAX_TASKS: usize,
+    > TaskGroup<ChannelId, Event, T, MAX_TASKS>
+{
     pub fn new(worker: u16) -> Self {
         Self {
             worker,
-            tasks: vec![],
-            _tmp: Default::default(),
+            tasks: array::from_fn(|_| None),
+            output: VecDeque::new(),
         }
     }
 
@@ -65,58 +82,76 @@ impl<ExtIn, ExtOut, T: Task<ExtIn, ExtOut>> TaskGroup<ExtIn, ExtOut, T> {
         self.tasks.len()
     }
 
-    pub fn add_task(&mut self, task: T) {
-        self.tasks.push(task);
+    pub fn add_task(&mut self, task: T) -> Result<(), TaskGroupError> {
+        for slot in self.tasks.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(task);
+                return Ok(());
+            }
+        }
+
+        Err(TaskGroupError::TaskFull)
     }
 
-    pub fn on_ext(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _ext: ExtIn) {
-        todo!()
+    pub fn on_bus(
+        &mut self,
+        now: Instant,
+        _ctx: &mut WorkerCtx<'_>,
+        owner: Owner,
+        channel_id: ChannelId,
+        event: Event,
+    ) {
+        self.tasks[owner.task_index().expect("on_bus only allow task owner")]
+            .as_mut()
+            .expect("should have task")
+            .on_input(now, TaskInput::Bus(channel_id, event));
     }
 
     pub fn on_net(&mut self, now: Instant, owner: Owner, net: NetIncoming) {
-        self.tasks[owner.task_index()].on_input(now, TaskInput::Net(net));
+        self.tasks[owner.task_index().expect("on_bus only allow task owner")]
+            .as_mut()
+            .expect("should have task")
+            .on_input(now, TaskInput::Net(net));
     }
 
     pub fn inner_process(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>) {
-        let mut destroyed_tasks = vec![];
-        for (index, task) in self.tasks.iter_mut().enumerate() {
+        for (index, slot) in self.tasks.iter_mut().enumerate() {
+            let task = match slot {
+                Some(task) => task,
+                None => continue,
+            };
             task.on_tick(now);
+            let mut destroyed = false;
             while let Some(output) = task.pop_output(now) {
                 match output {
                     TaskOutput::Net(out) => {
                         ctx.backend
-                            .on_action(out, Owner::task(self.worker, T::TYPE, index));
+                            .on_action(Owner::task(self.worker, T::TYPE, index), out);
                     }
-                    TaskOutput::External(_) => todo!(),
+                    TaskOutput::Bus(event) => {
+                        self.output.push_back(TaskGroupOutput::Bus(
+                            Owner::task(self.worker, T::TYPE, index),
+                            event,
+                        ));
+                    }
                     TaskOutput::Destroy => {
-                        destroyed_tasks.push(index);
+                        destroyed = true;
                     }
                 }
             }
-        }
-        while let Some(index) = destroyed_tasks.pop() {
-            ctx.backend
-                .remove_owner(Owner::task(self.worker, T::TYPE, index));
-            let last_index = self.tasks.len() - 1;
-            if index != last_index {
-                self.tasks.swap_remove(index);
-                ctx.backend.swap_owner(
-                    Owner::task(self.worker, T::TYPE, last_index),
-                    Owner::task(self.worker, T::TYPE, index),
-                );
-                //update element in destroyed_tasks to index if it equals last_index
-                for i in destroyed_tasks.iter_mut() {
-                    if *i == last_index {
-                        *i = index;
-                    }
-                }
-            } else {
-                self.tasks.pop();
+            if destroyed {
+                *slot = None;
+                self.output
+                    .push_back(TaskGroupOutput::DestroyOwner(Owner::task(
+                        self.worker,
+                        T::TYPE,
+                        index,
+                    )));
             }
         }
     }
 
-    pub fn pop_output(&mut self) -> Option<TaskGroupOutput<'_, ExtOut>> {
-        None
+    pub fn pop_output(&mut self) -> Option<TaskGroupOutput<ChannelId, Event>> {
+        self.output.pop_front()
     }
 }

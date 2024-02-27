@@ -47,11 +47,11 @@ impl Owner {
         }
     }
 
-    pub fn task_index(&self) -> usize {
+    pub fn task_index(&self) -> Option<usize> {
         match self {
-            Self::Worker { .. } => 0,
-            Self::Group { .. } => 0,
-            Self::Task { task_index, .. } => *task_index,
+            Self::Worker { .. } => None,
+            Self::Group { .. } => None,
+            Self::Task { task_index, .. } => Some(*task_index),
         }
     }
 }

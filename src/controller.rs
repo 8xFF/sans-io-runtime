@@ -1,9 +1,10 @@
+use std::{fmt::Debug, hash::Hash};
+
 use crate::{
     backend::Backend,
-    bus::{
-        BusEventSource, BusLegReceiver, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder,
-    },
+    bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder},
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
+    BusWorker,
 };
 
 struct WorkerContainer {
@@ -11,10 +12,11 @@ struct WorkerContainer {
     stats: WorkerStats,
 }
 
-pub struct Controller<ExtIn: Clone, ExtOut: Clone, SCfg: Clone> {
+pub struct Controller<ExtIn: Clone, ExtOut: Clone, SCfg: Clone, ChannelId, Event> {
+    worker_inner_bus: BusSystemBuilder<ChannelId, Event>,
     worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>>,
     worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>>,
-    worker_event_recv: BusLegReceiver<u16, WorkerControlOut<ExtOut>>,
+    worker_event: BusWorker<u16, WorkerControlOut<ExtOut>>,
     worker_threads: Vec<WorkerContainer>,
 }
 
@@ -22,37 +24,44 @@ impl<
         ExtIn: 'static + Send + Sync + Clone,
         ExtOut: 'static + Send + Sync + Clone,
         SCfg: 'static + Send + Sync + Clone,
-    > Controller<ExtIn, ExtOut, SCfg>
+        ChannelId: 'static + Debug + Clone + Copy + Hash + PartialEq + Eq + Send + Sync,
+        Event: 'static + Send + Sync + Clone,
+    > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event>
 {
     pub fn new() -> Self {
         let worker_control_bus = BusSystemBuilder::default();
         let mut worker_event_bus = BusSystemBuilder::default();
-        let (worker_event_recv, _current_leg_index) = worker_event_bus.new_leg();
+        let worker_event = worker_event_bus.new_worker();
 
         Self {
+            worker_inner_bus: BusSystemBuilder::default(),
             worker_control_bus,
             worker_event_bus,
-            worker_event_recv,
+            worker_event,
             worker_threads: Vec::new(),
         }
     }
 
     pub fn add_worker<
         ICfg: 'static + Send + Sync,
-        Inner: WorkerInner<ExtIn, ExtOut, ICfg, SCfg>,
+        Inner: WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
         B: Backend,
     >(
         &mut self,
         cfg: ICfg,
     ) {
-        let (worker_control_recv, worker_event_index) = self.worker_control_bus.new_leg();
-        let worker_event_bus = self.worker_event_bus.build_local(worker_event_index);
+        let worker_in = self.worker_control_bus.new_worker();
+        let worker_out = self.worker_event_bus.new_worker();
+        let worker_inner = self.worker_inner_bus.new_worker();
+
         let join = std::thread::spawn(move || {
-            let mut worker = worker::Worker::<ExtIn, ExtOut, Inner, ICfg, SCfg, B>::new(
-                Inner::build(worker_event_index as u16, cfg),
-                worker_event_bus,
-                worker_control_recv,
-            );
+            let mut worker =
+                worker::Worker::<ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B>::new(
+                    Inner::build(worker_in.leg_index() as u16, cfg),
+                    worker_inner,
+                    worker_out,
+                    worker_in,
+                );
             loop {
                 worker.process();
             }
@@ -66,11 +75,13 @@ impl<
     pub fn process(&mut self) {
         self.worker_control_bus
             .broadcast(WorkerControlIn::StatsRequest);
-        while let Some((source, event)) = self.worker_event_recv.recv() {
+        while let Some((source, event)) = self.worker_event.recv() {
             match (source, event) {
                 (BusEventSource::Direct(source_leg), WorkerControlOut::Stats(stats)) => {
                     log::debug!("Worker stats: {:?}", stats);
-                    self.worker_threads[source_leg].stats = stats;
+                    // source_leg is 1-based because of 0 is for controller
+                    // TODO avoid -1, should not hack this way
+                    self.worker_threads[source_leg - 1].stats = stats;
                 }
                 _ => {
                     unreachable!("WorkerControlOut only has Stats variant");
