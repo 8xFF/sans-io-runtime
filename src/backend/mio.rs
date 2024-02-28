@@ -275,6 +275,7 @@ mod tests {
 
     use super::MioBackend;
 
+    #[allow(unused_assignments)]
     #[test]
     fn test_on_action_udp_listen_success() {
         let mut backend = MioBackend::<2, 2>::default();
