@@ -6,10 +6,11 @@ use std::{
 
 use crate::{
     backend::Backend,
+    backend::BackendOwner,
+    bus::{BusEvent, BusEventSource, BusLocalHub, BusPubSubFeature},
     bus::{BusSendSingleFeature, BusWorker},
     owner::Owner,
-    BackendOwner, BusEvent, BusEventSource, BusLocalHub, BusPubSubFeature, NetIncoming,
-    NetOutgoing,
+    NetIncoming, NetOutgoing,
 };
 
 #[derive(Debug, Clone)]

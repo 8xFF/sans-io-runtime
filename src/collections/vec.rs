@@ -10,7 +10,7 @@
 /// Creating a new `DynamicVec`:
 ///
 /// ```
-/// use sans_io_runtime::DynamicVec;
+/// use sans_io_runtime::collections::DynamicVec;
 ///
 /// let mut vec: DynamicVec<u32, 10> = DynamicVec::new();
 /// ```
@@ -18,7 +18,7 @@
 /// Pushing elements into the `DynamicVec`:
 ///
 /// ```
-/// use sans_io_runtime::DynamicVec;
+/// use sans_io_runtime::collections::DynamicVec;
 ///
 /// let mut vec: DynamicVec<u32, 10> = DynamicVec::new();
 /// vec.push(true, 1).unwrap();
@@ -29,7 +29,7 @@
 /// Accessing elements in the `DynamicVec`:
 ///
 /// ```
-/// use sans_io_runtime::DynamicVec;
+/// use sans_io_runtime::collections::DynamicVec;
 ///
 /// let mut vec: DynamicVec<u32, 10> = DynamicVec::new();
 /// vec.push(true, 1).unwrap();

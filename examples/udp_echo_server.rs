@@ -5,7 +5,7 @@ use std::{
 };
 
 use sans_io_runtime::{
-    Controller, MioBackend, NetIncoming, NetOutgoing, Owner, WorkerCtx, WorkerInner,
+    backend::MioBackend, Controller, NetIncoming, NetOutgoing, Owner, WorkerCtx, WorkerInner,
     WorkerInnerOutput,
 };
 

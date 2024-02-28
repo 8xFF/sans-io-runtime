@@ -1,9 +1,10 @@
 use std::{hash::Hash, net::SocketAddr, time::Instant};
 
 use crate::{
+    bus::BusEvent,
     collections::{DynamicDeque, DynamicVec},
     owner::Owner,
-    BusEvent, ErrorDebugger2, WorkerCtx,
+    ErrorDebugger2, WorkerCtx,
 };
 
 pub enum NetIncoming<'a> {

@@ -4,8 +4,8 @@ use std::{
 };
 
 use sans_io_runtime::{
-    Controller, ErrorDebugger, MioBackend, NetIncoming, NetOutgoing, Owner, Task, TaskGroup,
-    TaskGroupOutput, TaskInput, TaskOutput, WorkerCtx, WorkerInner, WorkerInnerOutput,
+    backend::MioBackend, Controller, ErrorDebugger, NetIncoming, NetOutgoing, Owner, Task,
+    TaskGroup, TaskGroupOutput, TaskInput, TaskOutput, WorkerCtx, WorkerInner, WorkerInnerOutput,
 };
 
 type ExtIn = ();

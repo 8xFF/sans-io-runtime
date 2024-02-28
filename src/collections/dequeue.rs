@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 /// heap is popped and the elements are pushed to the stack.
 /// Example:
 /// ```
-/// use sans_io_runtime::DynamicDeque;
+/// use sans_io_runtime::collections::DynamicDeque;
 /// let mut deque: DynamicDeque<i32, 5> = DynamicDeque::new();
 /// deque.push_back(true, 1).unwrap();
 /// deque.push_back(true, 2).unwrap();

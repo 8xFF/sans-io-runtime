@@ -2,9 +2,8 @@ use std::{fmt::Debug, hash::Hash};
 
 use crate::{
     backend::Backend,
-    bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder},
+    bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder, BusWorker},
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
-    BusWorker,
 };
 
 const DEFAULT_STACK_SIZE: usize = 16 * 1024 * 1024;

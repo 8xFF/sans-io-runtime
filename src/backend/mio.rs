@@ -1,10 +1,53 @@
+//! This module contains the implementation of the MioBackend struct, which is a backend for the sans-io-runtime crate.
+//!
+//! The MioBackend struct provides an implementation of the Backend trait, allowing it to be used as a backend for the sans-io-runtime crate. It uses the Mio library for event-driven I/O operations.
+//!
+//! The MioBackend struct maintains a collection of UDP sockets, handles incoming and outgoing network packets, and provides methods for registering and unregistering owners.
+//!
+//! Example usage:
+//!
+//! ```rust
+//! use sans_io_runtime::backend::{Backend, BackendOwner, MioBackend};
+//! use sans_io_runtime::{Owner, NetIncoming, NetOutgoing};
+//! use std::time::Duration;
+//! use std::net::SocketAddr;
+//!
+//! // Create a MioBackend instance
+//! let mut backend = MioBackend::<8, 64>::default();
+//!
+//! // Register an owner and bind a UDP socket
+//! backend.on_action(Owner::worker(0), NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))));
+//!
+//! // Process incoming packets
+//! if let Some((incoming, owner)) = backend.pop_incoming(Duration::from_secs(1)) {
+//!     match incoming {
+//!         NetIncoming::UdpPacket { from, to, data } => {
+//!             // Handle incoming UDP packet
+//!         }
+//!         NetIncoming::UdpListenResult { bind, result } => {
+//!             // Handle UDP listen result
+//!         }
+//!     }
+//! }
+//!
+//! // Send an outgoing UDP packet
+//! let from = SocketAddr::from(([127, 0, 0, 1], 1000));
+//! let to = SocketAddr::from(([127, 0, 0, 1], 2000));
+//! let data = b"hello";
+//! backend.on_action(Owner::worker(0), NetOutgoing::UdpPacket { from, to, data });
+//!
+//! // Unregister an owner and remove associated sockets
+//! backend.remove_owner(Owner::worker(0));
+//! ```
+//!
+//! Note: This module assumes that the sans-io-runtime crate and the Mio library are already imported and available.
 use std::{net::SocketAddr, time::Duration, usize};
 
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};
 
 use crate::{
-    collections::DynamicDeque, owner::Owner, trace::ErrorDebugger, BackendOwner, ErrorDebugger2,
-    NetIncoming, NetOutgoing,
+    backend::BackendOwner, collections::DynamicDeque, owner::Owner, trace::ErrorDebugger,
+    ErrorDebugger2, NetIncoming, NetOutgoing,
 };
 
 use super::Backend;
@@ -218,5 +261,77 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
         for token in tokens {
             self.udp_sockets.remove(&token);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, time::Duration};
+
+    use crate::{
+        backend::{Backend, BackendOwner},
+        NetIncoming, NetOutgoing, Owner,
+    };
+
+    use super::MioBackend;
+
+    #[test]
+    fn test_on_action_udp_listen_success() {
+        let mut backend = MioBackend::<2, 2>::default();
+
+        let mut addr1 = None;
+        let mut addr2 = None;
+
+        backend.on_action(
+            Owner::worker(1),
+            NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))),
+        );
+        match backend.pop_incoming(Duration::from_secs(1)) {
+            Some((NetIncoming::UdpListenResult { bind, result }, owner)) => {
+                assert_eq!(owner, Owner::worker(1));
+                assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
+                addr1 = Some(result.expect("Expected Ok"));
+            }
+            _ => panic!("Expected UdpListenResult"),
+        }
+
+        backend.on_action(
+            Owner::worker(2),
+            NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))),
+        );
+        match backend.pop_incoming(Duration::from_secs(1)) {
+            Some((NetIncoming::UdpListenResult { bind, result }, owner)) => {
+                assert_eq!(owner, Owner::worker(2));
+                assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
+                addr2 = Some(result.expect("Expected Ok"));
+            }
+            _ => panic!("Expected UdpListenResult"),
+        }
+
+        assert_ne!(addr1, addr2);
+        backend.on_action(
+            Owner::worker(1),
+            NetOutgoing::UdpPacket {
+                from: addr1.expect(""),
+                to: addr2.expect(""),
+                data: b"hello",
+            },
+        );
+
+        match backend.pop_incoming(Duration::from_secs(1)) {
+            Some((NetIncoming::UdpPacket { from, to, data }, owner)) => {
+                assert_eq!(owner, Owner::worker(2));
+                assert_eq!(from, addr1.expect(""));
+                assert_eq!(to, addr2.expect(""));
+                assert_eq!(data, b"hello");
+            }
+            _ => panic!("Expected UdpPacket"),
+        }
+
+        backend.remove_owner(Owner::worker(1));
+        assert_eq!(backend.udp_sockets.len(), 1);
+
+        backend.remove_owner(Owner::worker(2));
+        assert_eq!(backend.udp_sockets.len(), 0);
     }
 }
