@@ -196,6 +196,7 @@ impl<
                 },
                 WorkerInnerOutput::Ext(safe, ext) => {
                     // TODO dont hardcode 0
+                    log::info!("Worker {} send external", self.inner.worker_index());
                     if let Err(e) = self.worker_out.send(0, safe, WorkerControlOut::Ext(ext)) {
                         log::error!("Failed to send external: {:?}", e);
                     }

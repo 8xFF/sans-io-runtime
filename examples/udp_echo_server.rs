@@ -5,8 +5,8 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::MioBackend, Controller, NetIncoming, NetOutgoing, Owner, WorkerCtx, WorkerInner,
-    WorkerInnerOutput,
+    backend::MioBackend, Buffer, Controller, NetIncoming, NetOutgoing, Owner, WorkerCtx,
+    WorkerInner, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -105,7 +105,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
                 NetOutgoing::UdpPacket {
                     from,
                     to,
-                    data: &self.buffers[buf_index][0..len],
+                    data: Buffer::Ref(&self.buffers[buf_index][0..len]),
                 },
             )),
         }

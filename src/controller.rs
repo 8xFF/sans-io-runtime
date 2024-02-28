@@ -3,6 +3,7 @@ use std::{fmt::Debug, hash::Hash};
 use crate::{
     backend::Backend,
     bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder, BusWorker},
+    collections::DynamicDeque,
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
 };
 
@@ -26,6 +27,7 @@ pub struct Controller<
     worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>, 16>,
     worker_event: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
     worker_threads: Vec<WorkerContainer>,
+    output: DynamicDeque<ExtOut, 16>,
 }
 
 impl<
@@ -48,6 +50,7 @@ impl<
             worker_event_bus,
             worker_event,
             worker_threads: Vec::new(),
+            output: DynamicDeque::new(),
         }
     }
 
@@ -101,12 +104,17 @@ impl<
             .broadcast(true, WorkerControlIn::StatsRequest);
         while let Some((source, event)) = self.worker_event.recv() {
             match (source, event) {
-                (BusEventSource::Direct(source_leg), WorkerControlOut::Stats(stats)) => {
-                    log::debug!("Worker stats: {:?}", stats);
-                    // source_leg is 1-based because of 0 is for controller
-                    // TODO avoid -1, should not hack this way
-                    self.worker_threads[source_leg - 1].stats = stats;
-                }
+                (BusEventSource::Direct(source_leg), event) => match event {
+                    WorkerControlOut::Stats(stats) => {
+                        log::debug!("Worker stats: {:?}", stats);
+                        // source_leg is 1-based because of 0 is for controller
+                        // TODO avoid -1, should not hack this way
+                        self.worker_threads[source_leg - 1].stats = stats;
+                    }
+                    WorkerControlOut::Ext(event) => {
+                        self.output.push_back_safe(event);
+                    }
+                },
                 _ => {
                     unreachable!("WorkerControlOut only has Stats variant");
                 }
@@ -130,5 +138,9 @@ impl<
         {
             log::error!("Failed to spawn task: {:?}", e);
         }
+    }
+
+    pub fn pop_event(&mut self) -> Option<ExtOut> {
+        self.output.pop_front()
     }
 }

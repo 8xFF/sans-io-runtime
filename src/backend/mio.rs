@@ -237,7 +237,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
             NetOutgoing::UdpPacket { from, to, data } => {
                 let token = addr_to_token(from);
                 if let Some(socket) = self.udp_sockets.get_mut(&token) {
-                    if let Err(e) = socket.socket.send_to(data, to) {
+                    if let Err(e) = socket.socket.send_to(&data, to) {
                         log::error!("Mio send_to error {:?}", e);
                     }
                 } else {
@@ -270,6 +270,7 @@ mod tests {
 
     use crate::{
         backend::{Backend, BackendOwner},
+        task::Buffer,
         NetIncoming, NetOutgoing, Owner,
     };
 
@@ -315,7 +316,7 @@ mod tests {
             NetOutgoing::UdpPacket {
                 from: addr1.expect(""),
                 to: addr2.expect(""),
-                data: b"hello",
+                data: Buffer::Ref(b"hello"),
             },
         );
 

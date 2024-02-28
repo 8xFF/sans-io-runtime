@@ -4,7 +4,7 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::MioBackend, Controller, ErrorDebugger, NetIncoming, NetOutgoing, Owner, Task,
+    backend::MioBackend, Buffer, Controller, ErrorDebugger, NetIncoming, NetOutgoing, Owner, Task,
     TaskGroup, TaskGroupOutput, TaskInput, TaskOutput, WorkerCtx, WorkerInner, WorkerInnerOutput,
 };
 
@@ -133,7 +133,7 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
             } => Some(TaskOutput::Net(NetOutgoing::UdpPacket {
                 from,
                 to,
-                data: &self.buffers[buf_index][0..len],
+                data: Buffer::Ref(&self.buffers[buf_index][0..len]),
             })),
             EchoTaskInQueue::Destroy => Some(TaskOutput::Destroy),
         }
@@ -201,8 +201,8 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     }
 
     fn inner_process(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>) {
-        self.echo_type1.inner_process(now, ctx);
-        self.echo_type2.inner_process(now, ctx);
+        self.echo_type1.on_tick(now, ctx);
+        self.echo_type2.on_tick(now, ctx);
     }
 
     fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut, ChannelId, Event>> {
