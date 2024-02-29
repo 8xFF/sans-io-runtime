@@ -26,6 +26,7 @@ pub struct TaskGroup<
     worker: u16,
     tasks: DynamicVec<Option<T>, STACK_SIZE>,
     _tmp: PhantomData<(ChannelId, Event)>,
+    next_tick_index: Option<usize>,
     last_input_index: Option<usize>,
     pop_output_index: usize,
     destroy_list: DynamicVec<usize, STACK_SIZE>,
@@ -44,6 +45,7 @@ impl<
             worker,
             tasks: DynamicVec::new(),
             _tmp: PhantomData::default(),
+            next_tick_index: None,
             last_input_index: None,
             pop_output_index: 0,
             destroy_list: DynamicVec::new(),
@@ -72,7 +74,7 @@ impl<
         &mut self,
         now: Instant,
     ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
-        let mut index = self.last_input_index.unwrap_or(0);
+        let mut index = self.next_tick_index.unwrap_or(0);
         while index < self.tasks.len() {
             let task = match self.tasks.get_mut_or_panic(index) {
                 Some(task) => task,
@@ -82,19 +84,21 @@ impl<
                 }
             };
             self.last_input_index = Some(index);
-            index += 1;
+            self.next_tick_index = Some(index + 1);
             if let Some(out) = task.on_tick(now) {
                 if let TaskOutput::Destroy = out {
                     self.destroy_list.push_safe(index);
                 }
-                return Some(TaskGroupOutput(
-                    Owner::task(self.worker, T::TYPE, index),
-                    out,
-                ));
+                let owner = Owner::task(self.worker, T::TYPE, index);
+                return Some(TaskGroupOutput(owner, out));
+            } else {
+                index += 1;
             }
         }
 
+        self.next_tick_index = None;
         self.last_input_index = None;
+
         None
     }
 
