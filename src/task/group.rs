@@ -124,7 +124,7 @@ impl<
     }
 
     /// Retrieves the output from the last processed task input event.
-    /// In SAN/IO we ussually have some output when we receive an input event.
+    /// In SAN/IO we usually have some output when we receive an input event.
     pub fn pop_last_input<'a>(
         &mut self,
         now: Instant,

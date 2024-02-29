@@ -7,7 +7,7 @@ use crate::{
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
 };
 
-const DEFAULT_STACK_SIZE: usize = 16 * 1024 * 1024;
+const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;
 
 struct WorkerContainer {
     _join: std::thread::JoinHandle<()>,
@@ -72,17 +72,7 @@ impl<
         let join = std::thread::Builder::new()
             .stack_size(stack_size)
             .spawn(move || {
-                let mut worker = worker::Worker::<
-                    ExtIn,
-                    ExtOut,
-                    ChannelId,
-                    Event,
-                    Inner,
-                    ICfg,
-                    SCfg,
-                    B,
-                    INNER_BUS_STACK,
-                >::new(
+                let mut worker = worker::Worker::<_, _, _, _, _, _, _, B, INNER_BUS_STACK>::new(
                     Inner::build(worker_in.leg_index() as u16, cfg),
                     worker_inner,
                     worker_out,
