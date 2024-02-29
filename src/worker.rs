@@ -90,7 +90,7 @@ pub(crate) struct Worker<
     backend: B,
     worker_out: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
     worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
-    network_buffer: [u8; 1500],
+    network_buffer: [u8; 8096],
     _tmp: std::marker::PhantomData<(Owner, ICfg)>,
 }
 
@@ -119,7 +119,7 @@ impl<
             backend: Default::default(),
             worker_out,
             worker_in,
-            network_buffer: [0; 1500],
+            network_buffer: [0; 8096],
             _tmp: Default::default(),
         }
     }
@@ -147,12 +147,9 @@ impl<
                         tasks: self.inner.tasks(),
                         ultilization: 0, //TODO measure this thread ultilization
                     };
-                    if let Err(e) = self
-                        .worker_out
+                    self.worker_out
                         .send(0, true, WorkerControlOut::Stats(stats))
-                    {
-                        log::error!("Failed to send stats: {:?}", e);
-                    }
+                        .expect("Should send success with safe flag");
                 }
             }
         }

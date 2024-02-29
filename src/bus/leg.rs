@@ -34,6 +34,23 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> Clone for BusLegSender<ChannelId,
 }
 
 impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegSender<ChannelId, MSG, STATIC_SIZE> {
+    /// Sends a message through the bus leg with safe, if stack full, it will append to heap.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The source of the bus event.
+    /// * `msg` - The message to be sent.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(len)` if the message is successfully sent, where `len` is the new length of the queue.
+    /// Returns `Err(ChannelFull)` if the queue is already full and the message cannot be sent.
+    pub fn send_safe(&self, source: BusEventSource<ChannelId>, msg: MSG) -> usize {
+        let mut queue = self.queue.lock();
+        queue.push_back_safe((source, msg));
+        queue.len()
+    }
+
     /// Sends a message through the bus leg.
     ///
     /// # Arguments

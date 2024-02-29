@@ -134,7 +134,7 @@ impl SfuWorker {
         );
         match task {
             Ok(task) => {
-                log::info!("Whip enpoint created {}", task.ice_ufrag);
+                log::info!("Whip endpoint created {}", task.ice_ufrag);
                 let index = self.whip_group.add_task(task.task);
                 self.shared_udp
                     .add_ufrag(task.ice_ufrag, TaskId::Whip(index));
@@ -181,7 +181,7 @@ impl SfuWorker {
         );
         match task {
             Ok(task) => {
-                log::info!("Whep enpoint created {}", task.ice_ufrag);
+                log::info!("Whep endpoint created {}", task.ice_ufrag);
                 let index = self.whep_group.add_task(task.task);
                 self.shared_udp
                     .add_ufrag(task.ice_ufrag, TaskId::Whep(index));

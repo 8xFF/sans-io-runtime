@@ -45,7 +45,7 @@ impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
                 [127, 0, 0, 1],
                 0,
             )))))
-            .print_err2("should not happend");
+            .print_err2("should not hapended");
         Self {
             count: 0,
             cfg,

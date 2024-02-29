@@ -25,6 +25,7 @@ impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
 }
 
 pub trait BusSendSingleFeature<MSG> {
+    fn send_safe(&self, dest_leg: usize, msg: MSG) -> usize;
     fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr>;
 }
 
@@ -73,6 +74,11 @@ impl<ChannelId, MSG, const STACK_SIZE: usize> BusSystemBuilder<ChannelId, MSG, S
 impl<ChannelId, MSG, const STACK_SIZE: usize> BusSendSingleFeature<MSG>
     for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
 {
+    fn send_safe(&self, dest_leg: usize, msg: MSG) -> usize {
+        let legs = self.legs.read();
+        legs[dest_leg].send_safe(BusEventSource::External, msg)
+    }
+
     fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr> {
         let legs = self.legs.read();
         legs[dest_leg].send(BusEventSource::External, safe, msg)
@@ -110,6 +116,11 @@ impl<ChannelId, MSG, const STACK_SIZE: usize> BusWorker<ChannelId, MSG, STACK_SI
 impl<ChannelId, MSG, const STACK_SIZE: usize> BusSendSingleFeature<MSG>
     for BusWorker<ChannelId, MSG, STACK_SIZE>
 {
+    fn send_safe(&self, dest_leg: usize, msg: MSG) -> usize {
+        let legs = self.legs.read();
+        legs[dest_leg].send_safe(BusEventSource::Direct(self.leg_index), msg)
+    }
+
     fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr> {
         let legs = self.legs.read();
         legs[dest_leg].send(BusEventSource::Direct(self.leg_index), safe, msg)
