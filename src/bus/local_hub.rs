@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
 use crate::Owner;
 
@@ -15,7 +15,7 @@ impl<ChannelId: Hash + PartialEq + Eq> Default for BusLocalHub<ChannelId> {
     }
 }
 
-impl<ChannelId: Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<ChannelId> {
+impl<ChannelId: Debug + Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<ChannelId> {
     /// subscribe to a channel. if it is first time subscription, return true; else return false
     pub fn subscribe(&mut self, owner: Owner, channel: ChannelId) -> bool {
         let entry = self.channels.entry(channel).or_default();
@@ -29,8 +29,11 @@ impl<ChannelId: Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<ChannelId> {
 
     /// unsubscribe from a channel. if it is last time unsubscription, return true; else return false
     pub fn unsubscribe(&mut self, owner: Owner, channel: ChannelId) -> bool {
+        log::info!("channels: {:?}", self.channels);
         if let Some(entry) = self.channels.get_mut(&channel) {
+            log::info!("remove owner {:?} with list {:?}", owner, entry);
             if let Some(pos) = entry.iter().position(|x| *x == owner) {
+                log::info!("remove owner {:?}", owner);
                 entry.swap_remove(pos);
                 if entry.is_empty() {
                     self.channels.remove(&channel);

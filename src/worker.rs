@@ -314,6 +314,7 @@ impl<
                 }
             },
             WorkerInnerOutput::Task(owner, TaskOutput::Destroy) => {
+                log::info!("Worker {worker} destroy owner {:?}", owner);
                 backend.remove_owner(owner);
                 bus_local_hub.remove_owner(owner);
             }

@@ -1,6 +1,6 @@
 use faster_stun::attribute::*;
 use faster_stun::*;
-use std::{collections::HashMap, fmt::Display, hash::Hash, net::SocketAddr};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, net::SocketAddr};
 
 #[derive(Debug)]
 pub struct SharedUdpPort<Task> {
@@ -23,7 +23,7 @@ impl<Task> Default for SharedUdpPort<Task> {
     }
 }
 
-impl<Task: Display + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
+impl<Task: Debug + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
     pub fn set_addr(&mut self, addr: SocketAddr) {
         self.addr = Some(addr);
     }
@@ -33,15 +33,18 @@ impl<Task: Display + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
     }
 
     pub fn add_ufrag(&mut self, ufrag: String, task: Task) {
+        log::info!("Add ufrag {} to task {:?}", ufrag, task);
         self.task_ufrags.insert(ufrag.clone(), task);
         self.task_ufrags_reverse.insert(task, ufrag);
     }
 
     pub fn remove_task(&mut self, task: Task) -> Option<()> {
         let ufrag = self.task_ufrags_reverse.remove(&task)?;
+        log::info!("Remove task {:?} => ufrag {}", task, ufrag);
         self.task_ufrags.remove(&ufrag)?;
         let remotes = self.task_remotes_map.remove(&task)?;
         for remote in remotes {
+            log::info!("     Remove remote {:?} => task {:?}", remote, task);
             self.task_remotes.remove(&remote);
         }
         Some(())
@@ -59,7 +62,7 @@ impl<Task: Display + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
             stun_username
         );
         let task = self.task_ufrags.get(stun_username)?;
-        log::info!("Mapping remote {:?} to task {}", remote, task);
+        log::info!("Mapping remote {:?} to task {:?}", remote, task);
         self.task_remotes.insert(remote, *task);
         self.task_remotes_map.entry(*task).or_default().push(remote);
         Some(*task)

@@ -109,6 +109,8 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                             },
                             socket.owner,
                         ));
+                    } else {
+                        self.event_buffer2.pop_front();
                     }
                 } else {
                     self.event_buffer2.pop_front();
