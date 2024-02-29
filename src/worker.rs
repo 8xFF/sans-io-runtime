@@ -67,10 +67,6 @@ pub trait WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>>;
-    fn pop_output<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>>;
 }
 
 pub(crate) struct Worker<
@@ -215,19 +211,6 @@ impl<
         }
 
         self.backend.finish_incoming_cycle();
-
-        let worker = self.inner.worker_index();
-        while let Some(output) = self.inner.pop_output(now) {
-            Self::process_inner_output(
-                output,
-                worker,
-                &mut self.inner_bus,
-                &mut self.worker_out,
-                &mut self.backend,
-                &mut self.bus_local_hub,
-            );
-        }
-
         self.backend.finish_outgoing_cycle();
         log::debug!("Worker process done in {}", now.elapsed().as_nanos());
     }

@@ -51,7 +51,12 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         &mut self,
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        None
+        match self.output.pop_front()? {
+            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
+                Owner::worker(self.worker),
+                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
+            )),
+        }
     }
     fn on_input_event<'a>(
         &mut self,
@@ -90,19 +95,6 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
         None
-    }
-
-    fn pop_output<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        let out = self.output.pop_front()?;
-        match out {
-            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
-                Owner::worker(self.worker),
-                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
-            )),
-        }
     }
 }
 

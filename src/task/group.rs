@@ -28,7 +28,6 @@ pub struct TaskGroup<
     _tmp: PhantomData<(ChannelId, Event)>,
     next_tick_index: Option<usize>,
     last_input_index: Option<usize>,
-    pop_output_index: usize,
     destroy_list: DynamicVec<usize, STACK_SIZE>,
 }
 
@@ -47,7 +46,6 @@ impl<
             _tmp: PhantomData::default(),
             next_tick_index: None,
             last_input_index: None,
-            pop_output_index: 0,
             destroy_list: DynamicVec::new(),
         }
     }
@@ -70,10 +68,15 @@ impl<
         self.tasks.len() - 1
     }
 
+    /// The idea of this function is external will call it utils it returns None.
+    /// If a task has output, we will return the output and save flag next_tick_index for next call.
+    /// In the end of list, we will clear next_tick_index
     pub fn on_input_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        self.clear_destroyed_task();
+
         let mut index = self.next_tick_index.unwrap_or(0);
         while index < self.tasks.len() {
             let task = match self.tasks.get_mut_or_panic(index) {
@@ -102,21 +105,22 @@ impl<
         None
     }
 
+    /// This function send an event to a task and return the output if the task has output.
+    /// If the task has output, we will return the output and save flag last_input_index for next pop_last_input call.
     pub fn on_input_event<'a>(
         &mut self,
         now: Instant,
         input: TaskGroupInput<'a, ChannelId, Event>,
     ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
-        self.clear_destroyed_task();
         let TaskGroupInput(owner, input) = input;
         let index = owner.task_index().expect("should have task index");
-        self.last_input_index = Some(index);
         let task = self
             .tasks
             .get_mut_or_panic(index)
             .as_mut()
             .expect("should have task");
         let out = task.on_input(now, input)?;
+        self.last_input_index = Some(index);
         if let TaskOutput::Destroy = out {
             self.destroy_list.push_safe(index);
         }
@@ -125,10 +129,15 @@ impl<
 
     /// Retrieves the output from the last processed task input event.
     /// In SAN/IO we usually have some output when we receive an input event.
+    /// External will call this function util it return None.
+    /// We use last_input_index which is saved in previous on_input_event or on_input_tick and clear it after we got None.
     pub fn pop_last_input<'a>(
         &mut self,
         now: Instant,
     ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        // We dont clear_destroyed_task here because have some case we have output after we received TaskOutput::Destroy the task.
+        // We will clear_destroyed_task in next pop_output call.
+
         let index = self.last_input_index?;
         let owner = Owner::task(self.worker, T::TYPE, index);
         let slot = self.tasks.get_mut_or_panic(index).as_mut();
@@ -143,42 +152,6 @@ impl<
             self.destroy_list.push_safe(index);
         }
         Some(TaskGroupOutput(owner, out))
-    }
-
-    /// Retrieves the next output event from the task group.
-    pub fn pop_output<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
-        self.clear_destroyed_task();
-
-        let tasks = &mut self.tasks;
-        while self.pop_output_index < tasks.len() {
-            let task = match tasks.get_mut_or_panic(self.pop_output_index) {
-                Some(task) => task,
-                None => {
-                    self.pop_output_index += 1;
-                    continue;
-                }
-            };
-            match task.pop_output(now) {
-                Some(output) => {
-                    if let TaskOutput::Destroy = output {
-                        self.destroy_list.push_safe(self.pop_output_index);
-                    }
-                    return Some(TaskGroupOutput(
-                        Owner::task(self.worker, T::TYPE, self.pop_output_index),
-                        output,
-                    ));
-                }
-                None => {
-                    self.pop_output_index += 1;
-                }
-            }
-        }
-
-        self.pop_output_index = 0;
-        None
     }
 
     fn clear_destroyed_task(&mut self) {

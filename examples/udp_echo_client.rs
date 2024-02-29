@@ -5,8 +5,8 @@ use std::{
 
 use sans_io_runtime::{
     backend::MioBackend, Buffer, Controller, ErrorDebugger2, NetIncoming, NetOutgoing, Task,
-    TaskGroup, TaskGroupInput, TaskGroupOutput, TaskInput, TaskOutput, WorkerInner,
-    WorkerInnerInput, WorkerInnerOutput,
+    TaskGroup, TaskGroupInput, TaskGroupOutput, TaskGroupOutputsState, TaskInput, TaskOutput,
+    WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -108,8 +108,10 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<ChannelId, Event, EchoTask<1>, 16>,
-    echo_type2: TaskGroup<ChannelId, Event, EchoTask<2>, 16>,
+    echo_type1: TaskGroup<ChannelId, Event, EchoTask<0>, 16>,
+    echo_type2: TaskGroup<ChannelId, Event, EchoTask<1>, 16>,
+    group_state: TaskGroupOutputsState<2>,
+    last_input_index: Option<u16>,
 }
 
 impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
@@ -126,6 +128,8 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
             worker,
             echo_type1: TaskGroup::new(worker),
             echo_type2: TaskGroup::new(worker),
+            last_input_index: None,
+            group_state: TaskGroupOutputsState::default(),
         }
     }
 
@@ -142,9 +146,29 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
 
     fn on_input_tick<'a>(
         &mut self,
-        _now: Instant,
+        now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        None
+        loop {
+            match self.group_state.current()? {
+                0 => match self.echo_type1.on_input_tick(now) {
+                    Some(e) => {
+                        return Some(e.into());
+                    }
+                    None => {
+                        self.group_state.finish_current();
+                    }
+                },
+                1 => match self.echo_type2.on_input_tick(now) {
+                    Some(e) => {
+                        return Some(e.into());
+                    }
+                    None => {
+                        self.group_state.finish_current();
+                    }
+                },
+                _ => unreachable!(),
+            }
+        }
     }
 
     fn on_input_event<'a>(
@@ -154,16 +178,18 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
         match event {
             WorkerInnerInput::Task(owner, event) => match owner.group_id() {
-                Some(1) => {
+                Some(0) => {
                     let TaskGroupOutput(owner, output) = self
                         .echo_type1
                         .on_input_event(now, TaskGroupInput(owner, event))?;
+                    self.last_input_index = Some(1);
                     Some(WorkerInnerOutput::Task(owner, output))
                 }
-                Some(2) => {
+                Some(1) => {
                     let TaskGroupOutput(owner, output) = self
                         .echo_type2
                         .on_input_event(now, TaskGroupInput(owner, event))?;
+                    self.last_input_index = Some(2);
                     Some(WorkerInnerOutput::Task(owner, output))
                 }
                 _ => unreachable!(),
@@ -176,25 +202,10 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        if let Some(TaskGroupOutput(owner, event)) = self.echo_type1.pop_last_input(now) {
-            Some(WorkerInnerOutput::Task(owner, event))
-        } else if let Some(TaskGroupOutput(owner, event)) = self.echo_type2.pop_last_input(now) {
-            Some(WorkerInnerOutput::Task(owner, event))
-        } else {
-            return None;
-        }
-    }
-
-    fn pop_output<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        if let Some(TaskGroupOutput(owner, output)) = self.echo_type1.pop_output(now) {
-            Some(WorkerInnerOutput::Task(owner, output))
-        } else if let Some(TaskGroupOutput(owner, output)) = self.echo_type2.pop_output(now) {
-            Some(WorkerInnerOutput::Task(owner, output))
-        } else {
-            None
+        match self.last_input_index? {
+            0 => self.echo_type1.pop_last_input(now).map(|a| a.into()),
+            1 => self.echo_type2.pop_last_input(now).map(|a| a.into()),
+            _ => unreachable!(),
         }
     }
 }
