@@ -1,4 +1,28 @@
-# SansIo runtime (Working in progress)
+<p align="center">
+ <a href="https://github.com/8xFF/sans-io-runtime/actions">
+  <img src="https://github.com/8xFF/sans-io-runtime/actions/workflows/rust.yml/badge.svg?branch=main">
+ </a>
+ <a href="https://codecov.io/gh/8xff/sans-io-runtime">
+  <img src="https://codecov.io/gh/8xff/sans-io-runtime/branch/main/graph/badge.svg">
+ </a>
+ <a href="https://deps.rs/repo/github/8xff/sans-io-runtime">
+  <img src="https://deps.rs/repo/github/8xff/sans-io-runtime/status.svg">
+ </a>
+ <a href="https://crates.io/crates/sans-io-runtime">
+  <img src="https://img.shields.io/crates/v/sans-io-runtime.svg">
+ </a>
+ <a href="https://docs.rs/sans-io-runtime">
+  <img src="https://docs.rs/sans-io-runtime/badge.svg">
+ </a>
+ <a href="https://github.com/8xFF/sans-io-runtime/blob/main/LICENSE">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+ </a>
+ <a href="https://discord.gg/tJ6dxBRk">
+  <img src="https://img.shields.io/discord/1173844241542287482?logo=discord" alt="Discord">
+ </a>
+</p>
+
+# SANS-I/O runtime (Working in progress)
 
 (This module is in very early stage of development. It is not ready for production use.)
 
