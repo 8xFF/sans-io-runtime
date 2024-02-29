@@ -19,6 +19,12 @@ fn main() {
         },
         None,
     );
+    controller.add_worker::<_, SfuWorker, MioBackend<128, 512>>(
+        ICfg {
+            udp_addr: "192.168.1.39:0".parse().unwrap(),
+        },
+        None,
+    );
 
     while let Ok(req) = server.recv(Duration::from_micros(100)) {
         controller.process();

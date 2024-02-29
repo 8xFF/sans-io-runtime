@@ -1,5 +1,5 @@
 use parking_lot::RwLock;
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc};
 
 mod leg;
 mod local_hub;
@@ -40,6 +40,7 @@ pub trait BusPubSubFeature<ChannelId, MSG: Clone> {
 
 pub struct BusSystemBuilder<ChannelId, MSG, const STACK_SIZE: usize> {
     legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG, STACK_SIZE>>>>,
+    channels: Arc<RwLock<HashMap<ChannelId, Vec<usize>>>>,
 }
 
 impl<ChannelId, MSG, const STACK_SIZE: usize> Default
@@ -48,6 +49,7 @@ impl<ChannelId, MSG, const STACK_SIZE: usize> Default
     fn default() -> Self {
         Self {
             legs: Default::default(),
+            channels: Default::default(),
         }
     }
 }
@@ -63,7 +65,7 @@ impl<ChannelId, MSG, const STACK_SIZE: usize> BusSystemBuilder<ChannelId, MSG, S
             leg_index,
             receiver: recv,
             legs: self.legs.clone(),
-            channels: Default::default(),
+            channels: self.channels.clone(),
         }
     }
 }
@@ -125,7 +127,7 @@ impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
     }
 }
 
-impl<ChannelId: Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SIZE: usize>
+impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SIZE: usize>
     BusPubSubFeature<ChannelId, MSG> for BusWorker<ChannelId, MSG, STACK_SIZE>
 {
     fn subscribe(&self, channel: ChannelId) {
