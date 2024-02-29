@@ -11,7 +11,8 @@ mod worker;
 pub use controller::Controller;
 pub use owner::Owner;
 pub use task::{
-    Buffer, NetIncoming, NetOutgoing, Task, TaskGroup, TaskGroupOutput, TaskInput, TaskOutput,
+    Buffer, NetIncoming, NetOutgoing, Task, TaskGroup, TaskGroupInput, TaskGroupOutput, TaskInput,
+    TaskOutput,
 };
 pub use trace::*;
-pub use worker::{WorkerCtx, WorkerInner, WorkerInnerOutput, WorkerStats};
+pub use worker::{WorkerInner, WorkerInnerInput, WorkerInnerOutput, WorkerStats};

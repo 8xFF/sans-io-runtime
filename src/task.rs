@@ -5,14 +5,9 @@
 ///! The worker is responsible for dispatching network and bus events to the appropriate task group, and for
 ///! processing the task groups.
 ///!
-use std::{hash::Hash, net::SocketAddr, ops::Deref, time::Instant};
+use std::{hash::Hash, marker::PhantomData, net::SocketAddr, ops::Deref, time::Instant};
 
-use crate::{
-    bus::BusEvent,
-    collections::{DynamicDeque, DynamicVec},
-    owner::Owner,
-    ErrorDebugger2, WorkerCtx,
-};
+use crate::{backend::BackendIncoming, bus::BusEvent, collections::DynamicVec, owner::Owner};
 
 /// Represents an incoming network event.
 pub enum NetIncoming<'a> {
@@ -25,6 +20,20 @@ pub enum NetIncoming<'a> {
         to: SocketAddr,
         data: &'a [u8],
     },
+}
+
+impl<'a> NetIncoming<'a> {
+    pub fn from_backend(event: BackendIncoming, buf: &'a [u8]) -> Self {
+        match event {
+            BackendIncoming::UdpListenResult { bind, result } => {
+                Self::UdpListenResult { bind, result }
+            }
+            BackendIncoming::UdpPacket { from, to, len } => {
+                let data = &buf[..len];
+                Self::UdpPacket { from, to, data }
+            }
+        }
+    }
 }
 
 pub enum Buffer<'a> {
@@ -70,21 +79,25 @@ pub trait Task<ChannelId, Event> {
     /// The type identifier for the task.
     const TYPE: u16;
 
-    /// Called on each tick of the task.
-    fn on_tick(&mut self, now: Instant);
+    /// Called each time the task is ticked. Default is 1ms.
+    fn on_tick<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, Event>>;
 
     /// Called when an input event is received for the task.
-    fn on_input<'a>(&mut self, now: Instant, input: TaskInput<'a, ChannelId, Event>);
+    fn on_input<'a>(
+        &mut self,
+        now: Instant,
+        input: TaskInput<'a, ChannelId, Event>,
+    ) -> Option<TaskOutput<'a, ChannelId, Event>>;
 
     /// Retrieves the next output event from the task.
-    fn pop_output(&mut self, now: Instant) -> Option<TaskOutput<'_, ChannelId, Event>>;
+    fn pop_output<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, Event>>;
 }
 
+/// Represents the input of a task group.
+pub struct TaskGroupInput<'a, ChannelId, Event>(pub Owner, pub TaskInput<'a, ChannelId, Event>);
+
 /// Represents the output of a task group.
-pub enum TaskGroupOutput<ChannelId, EventOut> {
-    Bus(Owner, BusEvent<ChannelId, EventOut>),
-    DestroyOwner(Owner),
-}
+pub struct TaskGroupOutput<'a, ChannelId, Event>(pub Owner, pub TaskOutput<'a, ChannelId, Event>);
 
 /// Represents a group of tasks.
 pub struct TaskGroup<
@@ -92,11 +105,13 @@ pub struct TaskGroup<
     Event,
     T: Task<ChannelId, Event>,
     const STACK_SIZE: usize,
-    const QUEUE_SIZE: usize,
 > {
     worker: u16,
     tasks: DynamicVec<Option<T>, STACK_SIZE>,
-    output: DynamicDeque<TaskGroupOutput<ChannelId, Event>, QUEUE_SIZE>,
+    _tmp: PhantomData<(ChannelId, Event)>,
+    last_input_index: Option<usize>,
+    pop_output_index: usize,
+    destroy_list: DynamicVec<usize, STACK_SIZE>,
 }
 
 impl<
@@ -104,15 +119,17 @@ impl<
         Event,
         T: Task<ChannelId, Event>,
         const MAX_TASKS: usize,
-        const QUEUE_SIZE: usize,
-    > TaskGroup<ChannelId, Event, T, MAX_TASKS, QUEUE_SIZE>
+    > TaskGroup<ChannelId, Event, T, MAX_TASKS>
 {
     /// Creates a new task group with the specified worker ID.
     pub fn new(worker: u16) -> Self {
         Self {
             worker,
             tasks: DynamicVec::new(),
-            output: DynamicDeque::new(),
+            _tmp: PhantomData::default(),
+            last_input_index: None,
+            pop_output_index: 0,
+            destroy_list: DynamicVec::new(),
         }
     }
 
@@ -134,76 +151,117 @@ impl<
         self.tasks.len() - 1
     }
 
-    /// Handles a bus event for the task group.
-    pub fn on_bus(
+    pub fn on_input_tick<'a>(
         &mut self,
         now: Instant,
-        _ctx: &mut WorkerCtx<'_>,
-        owner: Owner,
-        channel_id: ChannelId,
-        event: Event,
-    ) {
-        self.tasks
-            .get_mut_or_panic(owner.task_index().expect("on_bus only allow task owner"))
-            .as_mut()
-            .expect("should have task")
-            .on_input(now, TaskInput::Bus(channel_id, event));
-    }
-
-    /// Handles a network event for the task group.
-    pub fn on_net(&mut self, now: Instant, owner: Owner, net: NetIncoming) {
-        self.tasks
-            .get_mut_or_panic(owner.task_index().expect("on_bus only allow task owner"))
-            .as_mut()
-            .expect("should have task")
-            .on_input(now, TaskInput::Net(net));
-    }
-
-    /// Processes the tasks in the group.
-    pub fn on_tick(&mut self, now: Instant, ctx: &mut WorkerCtx<'_>) {
-        for (index, slot) in self.tasks.iter_mut().enumerate() {
-            let task = match slot {
+    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        let mut index = self.last_input_index.unwrap_or(0);
+        while index < self.tasks.len() {
+            let task = match self.tasks.get_mut_or_panic(index) {
                 Some(task) => task,
-                None => continue,
-            };
-            task.on_tick(now);
-            let mut destroyed = false;
-            while let Some(output) = task.pop_output(now) {
-                match output {
-                    TaskOutput::Net(out) => {
-                        ctx.backend
-                            .on_action(Owner::task(self.worker, T::TYPE, index), out);
-                    }
-                    TaskOutput::Bus(event) => {
-                        self.output
-                            .push_back(
-                                event.high_priority(),
-                                TaskGroupOutput::Bus(
-                                    Owner::task(self.worker, T::TYPE, index),
-                                    event,
-                                ),
-                            )
-                            .print_err2("queue full");
-                    }
-                    TaskOutput::Destroy => {
-                        destroyed = true;
-                    }
+                None => {
+                    index += 1;
+                    continue;
                 }
-            }
-            if destroyed {
-                *slot = None;
-                self.output
-                    .push_back_safe(TaskGroupOutput::DestroyOwner(Owner::task(
-                        self.worker,
-                        T::TYPE,
-                        index,
-                    )));
+            };
+            self.last_input_index = Some(index);
+            index += 1;
+            if let Some(out) = task.on_tick(now) {
+                if let TaskOutput::Destroy = out {
+                    self.destroy_list.push_safe(index);
+                }
+                return Some(TaskGroupOutput(
+                    Owner::task(self.worker, T::TYPE, index),
+                    out,
+                ));
             }
         }
+
+        None
+    }
+
+    pub fn on_input_event<'a>(
+        &mut self,
+        now: Instant,
+        input: TaskGroupInput<'a, ChannelId, Event>,
+    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        self.clear_destroyed_task();
+        let TaskGroupInput(owner, input) = input;
+        let index = owner.task_index().expect("should have task index");
+        self.last_input_index = Some(index);
+        let task = self
+            .tasks
+            .get_mut_or_panic(index)
+            .as_mut()
+            .expect("should have task");
+        let out = task.on_input(now, input)?;
+        if let TaskOutput::Destroy = out {
+            self.destroy_list.push_safe(index);
+        }
+        Some(TaskGroupOutput(owner, out))
+    }
+
+    /// Retrieves the output from the last processed task input event.
+    /// In SAN/IO we ussually have some output when we receive an input event.
+    pub fn pop_last_input<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        let index = self.last_input_index?;
+        let owner = Owner::task(self.worker, T::TYPE, index);
+        let slot = self.tasks.get_mut_or_panic(index).as_mut();
+        let out = match slot.expect("should have task").pop_output(now) {
+            Some(output) => output,
+            None => {
+                self.last_input_index = None;
+                return None;
+            }
+        };
+        if let TaskOutput::Destroy = out {
+            self.destroy_list.push_safe(index);
+        }
+        Some(TaskGroupOutput(owner, out))
     }
 
     /// Retrieves the next output event from the task group.
-    pub fn pop_output(&mut self) -> Option<TaskGroupOutput<ChannelId, Event>> {
-        self.output.pop_front()
+    pub fn pop_output<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        self.clear_destroyed_task();
+
+        let tasks = &mut self.tasks;
+        while self.pop_output_index < tasks.len() {
+            let task = match tasks.get_mut_or_panic(self.pop_output_index) {
+                Some(task) => task,
+                None => {
+                    self.pop_output_index += 1;
+                    continue;
+                }
+            };
+            match task.pop_output(now) {
+                Some(output) => {
+                    if let TaskOutput::Destroy = output {
+                        self.destroy_list.push_safe(self.pop_output_index);
+                    }
+                    return Some(TaskGroupOutput(
+                        Owner::task(self.worker, T::TYPE, self.pop_output_index),
+                        output,
+                    ));
+                }
+                None => {
+                    self.pop_output_index += 1;
+                }
+            }
+        }
+
+        self.pop_output_index = 0;
+        None
+    }
+
+    fn clear_destroyed_task(&mut self) {
+        while let Some(index) = self.destroy_list.pop() {
+            self.tasks.get_mut_or_panic(index).take();
+        }
     }
 }

@@ -47,8 +47,8 @@ impl<ChannelId: Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<ChannelId> {
     }
 
     /// get all subscribers of a channel
-    pub fn get_subscribers(&self, channel: ChannelId) -> Option<&[Owner]> {
-        self.channels.get(&channel).map(|x| x.as_slice())
+    pub fn get_subscribers(&self, channel: ChannelId) -> Option<Vec<Owner>> {
+        self.channels.get(&channel).map(|x: &Vec<Owner>| x.clone())
     }
 
     /// remove owner from all channels
@@ -106,8 +106,8 @@ mod tests {
         hub.subscribe(owner1, Channel::B);
         hub.subscribe(owner2, Channel::A);
 
-        assert_eq!(hub.get_subscribers(Channel::A), Some(&[owner1, owner2][..]));
-        assert_eq!(hub.get_subscribers(Channel::B), Some(&[owner1][..]));
+        assert_eq!(hub.get_subscribers(Channel::A), Some(vec![owner1, owner2]));
+        assert_eq!(hub.get_subscribers(Channel::B), Some(vec![owner1]));
         assert_eq!(hub.get_subscribers(Channel::C), None);
     }
 
@@ -123,7 +123,7 @@ mod tests {
 
         hub.remove_owner(owner1);
 
-        assert_eq!(hub.get_subscribers(Channel::A), Some(&[owner2][..]));
+        assert_eq!(hub.get_subscribers(Channel::A), Some(vec![owner2]));
         assert_eq!(hub.get_subscribers(Channel::B), None);
     }
 }

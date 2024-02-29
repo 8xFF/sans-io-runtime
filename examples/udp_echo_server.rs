@@ -5,8 +5,8 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::MioBackend, Buffer, Controller, NetIncoming, NetOutgoing, Owner, WorkerCtx,
-    WorkerInner, WorkerInnerOutput,
+    backend::MioBackend, Buffer, Controller, NetIncoming, NetOutgoing, Owner, TaskInput,
+    TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -22,18 +22,10 @@ struct EchoWorkerCfg {
 
 enum EchoWorkerInQueue {
     UdpListen(SocketAddr),
-    SendUdpPacket {
-        from: SocketAddr,
-        to: SocketAddr,
-        buf_index: usize,
-        len: usize,
-    },
 }
 
 struct EchoWorker {
     worker: u16,
-    buffers: [[u8; 1500]; 512],
-    buffer_index: usize,
     output: VecDeque<EchoWorkerInQueue>,
 }
 
@@ -42,8 +34,6 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
             worker,
-            buffers: [[0; 1500]; 512],
-            buffer_index: 0,
             output: VecDeque::from([EchoWorkerInQueue::UdpListen(cfg.bind)]),
         }
     }
@@ -56,57 +46,61 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         1
     }
 
-    fn spawn(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _cfg: SCfg) {}
-    fn on_ext(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>, _ext: ExtIn) {}
-    fn on_bus(
+    fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
+    fn on_input_tick<'a>(
         &mut self,
         _now: Instant,
-        _ctx: &mut WorkerCtx<'_>,
-        _owner: Owner,
-        _channel_id: ChannelId,
-        _event: Event,
-    ) {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+        None
     }
-    fn on_net(&mut self, _now: Instant, _owner: Owner, input: NetIncoming) {
-        match input {
-            NetIncoming::UdpListenResult { bind, result } => {
+    fn on_input_event<'a>(
+        &mut self,
+        _now: Instant,
+        event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+        match event {
+            WorkerInnerInput::Task(
+                _owner,
+                TaskInput::Net(NetIncoming::UdpListenResult { bind, result }),
+            ) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
+                None
             }
-            NetIncoming::UdpPacket { from, to, data } => {
+            WorkerInnerInput::Task(
+                _owner,
+                TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+            ) => {
                 assert!(data.len() <= 1500, "data too large");
-                let buffer_index = self.buffer_index;
-                self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
-                self.buffers[buffer_index][0..data.len()].copy_from_slice(data);
 
-                self.output.push_back(EchoWorkerInQueue::SendUdpPacket {
-                    from: to,
-                    to: from,
-                    buf_index: buffer_index,
-                    len: data.len(),
-                });
+                Some(WorkerInnerOutput::Task(
+                    Owner::worker(self.worker),
+                    TaskOutput::Net(NetOutgoing::UdpPacket {
+                        from: to,
+                        to: from,
+                        data: Buffer::Vec(data.to_vec()),
+                    }),
+                ))
             }
+            _ => None,
         }
     }
-    fn inner_process(&mut self, _now: Instant, _ctx: &mut WorkerCtx<'_>) {}
-    fn pop_output(&mut self) -> Option<WorkerInnerOutput<'_, ExtOut, ChannelId, Event>> {
+
+    fn pop_last_input<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+        None
+    }
+
+    fn pop_output<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
         let out = self.output.pop_front()?;
         match out {
-            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Net(
+            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
                 Owner::worker(self.worker),
-                NetOutgoing::UdpListen(bind),
-            )),
-            EchoWorkerInQueue::SendUdpPacket {
-                from,
-                to,
-                buf_index,
-                len,
-            } => Some(WorkerInnerOutput::Net(
-                Owner::worker(self.worker),
-                NetOutgoing::UdpPacket {
-                    from,
-                    to,
-                    data: Buffer::Ref(&self.buffers[buf_index][0..len]),
-                },
+                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
             )),
         }
     }

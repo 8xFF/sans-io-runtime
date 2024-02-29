@@ -7,8 +7,8 @@
 //! Example usage:
 //!
 //! ```rust
-//! use sans_io_runtime::backend::{Backend, BackendOwner, MioBackend};
-//! use sans_io_runtime::{Owner, NetIncoming, NetOutgoing};
+//! use sans_io_runtime::backend::{Backend, BackendOwner, MioBackend, BackendIncoming};
+//! use sans_io_runtime::{Owner, Buffer, NetOutgoing};
 //! use std::time::Duration;
 //! use std::net::SocketAddr;
 //!
@@ -18,13 +18,15 @@
 //! // Register an owner and bind a UDP socket
 //! backend.on_action(Owner::worker(0), NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))));
 //!
+//! let mut buf = [0; 1500];
+//!
 //! // Process incoming packets
-//! if let Some((incoming, owner)) = backend.pop_incoming(Duration::from_secs(1)) {
+//! if let Some((incoming, owner)) = backend.pop_incoming(Duration::from_secs(1), &mut buf) {
 //!     match incoming {
-//!         NetIncoming::UdpPacket { from, to, data } => {
+//!         BackendIncoming::UdpPacket { from, to, len } => {
 //!             // Handle incoming UDP packet
 //!         }
-//!         NetIncoming::UdpListenResult { bind, result } => {
+//!         BackendIncoming::UdpListenResult { bind, result } => {
 //!             // Handle UDP listen result
 //!         }
 //!     }
@@ -33,7 +35,7 @@
 //! // Send an outgoing UDP packet
 //! let from = SocketAddr::from(([127, 0, 0, 1], 1000));
 //! let to = SocketAddr::from(([127, 0, 0, 1], 2000));
-//! let data = b"hello";
+//! let data = Buffer::Ref(b"hello");
 //! backend.on_action(Owner::worker(0), NetOutgoing::UdpPacket { from, to, data });
 //!
 //! // Unregister an owner and remove associated sockets
@@ -46,11 +48,10 @@ use std::{net::SocketAddr, time::Duration, usize};
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};
 
 use crate::{
-    backend::BackendOwner, collections::DynamicDeque, owner::Owner, trace::ErrorDebugger,
-    ErrorDebugger2, NetIncoming, NetOutgoing,
+    backend::BackendOwner, collections::DynamicDeque, owner::Owner, ErrorDebugger2, NetOutgoing,
 };
 
-use super::Backend;
+use super::{Backend, BackendIncoming};
 
 const QUEUE_PKT_NUM: usize = 512;
 
@@ -66,13 +67,6 @@ struct UdpContainer<Owner> {
 
 #[derive(Debug)]
 enum InQueue<Owner> {
-    UdpData {
-        owner: Owner,
-        from: SocketAddr,
-        to: SocketAddr,
-        buffer_index: usize,
-        buffer_size: usize,
-    },
     UdpListenResult {
         owner: Owner,
         bind: SocketAddr,
@@ -80,104 +74,90 @@ enum InQueue<Owner> {
     },
 }
 
-pub struct MioBackend<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> {
+pub struct MioBackend<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> {
     poll: Poll,
     event_buffer: Events,
+    event_buffer2: heapless::Deque<Token, QUEUE_PKT_NUM>,
     udp_sockets: heapless::FnvIndexMap<Token, UdpContainer<Owner>, SOCKET_LIMIT>,
-    output: DynamicDeque<InQueue<Owner>, QUEUE_SIZE>,
-    buffers: [[u8; 1500]; QUEUE_PKT_NUM],
-    buffer_index: usize,
-    buffer_inqueue_count: usize,
+    output: DynamicDeque<InQueue<Owner>, STACK_QUEUE_SIZE>,
 }
 
-impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> Default
-    for MioBackend<SOCKET_LIMIT, QUEUE_SIZE>
+impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
+    MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
+{
+    fn pop_cached_event(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
+        if let Some(wait) = self.output.pop_front() {
+            match wait {
+                InQueue::UdpListenResult {
+                    owner,
+                    bind,
+                    result,
+                } => {
+                    return Some((BackendIncoming::UdpListenResult { bind, result }, owner));
+                }
+            }
+        }
+        while !self.event_buffer2.is_empty() {
+            if let Some(token) = self.event_buffer2.front() {
+                if let Some(socket) = self.udp_sockets.get(token) {
+                    if let Ok((buffer_size, addr)) = socket.socket.recv_from(buf) {
+                        return Some((
+                            BackendIncoming::UdpPacket {
+                                from: addr,
+                                to: socket.local_addr,
+                                len: buffer_size,
+                            },
+                            socket.owner,
+                        ));
+                    }
+                } else {
+                    self.event_buffer2.pop_front();
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
+    for MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
     fn default() -> Self {
         Self {
             poll: Poll::new().expect("should create mio-poll"),
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
+            event_buffer2: heapless::Deque::new(),
             udp_sockets: heapless::FnvIndexMap::new(),
             output: DynamicDeque::new(),
-            buffers: [[0; 1500]; QUEUE_PKT_NUM],
-            buffer_index: 0,
-            buffer_inqueue_count: 0,
         }
     }
 }
 
-impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> Backend
-    for MioBackend<SOCKET_LIMIT, QUEUE_SIZE>
+impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
+    for MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
-    fn pop_incoming(&mut self, timeout: Duration) -> Option<(NetIncoming, Owner)> {
-        loop {
-            if let Some(wait) = self.output.pop_front() {
-                match wait {
-                    InQueue::UdpData {
-                        owner,
-                        from,
-                        to,
-                        buffer_index,
-                        buffer_size,
-                    } => {
-                        self.buffer_inqueue_count -= 1;
-                        return Some((
-                            NetIncoming::UdpPacket {
-                                from,
-                                to,
-                                data: &self.buffers[buffer_index][0..buffer_size],
-                            },
-                            owner,
-                        ));
-                    }
-                    InQueue::UdpListenResult {
-                        owner,
-                        bind,
-                        result,
-                    } => {
-                        return Some((NetIncoming::UdpListenResult { bind, result }, owner));
-                    }
-                }
-            }
-
-            if let Err(e) = self.poll.poll(&mut self.event_buffer, Some(timeout)) {
-                log::error!("Mio poll error {:?}", e);
-                return None;
-            }
-
-            for event in self.event_buffer.iter() {
-                if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
-                    break;
-                }
-                if let Some(socket) = self.udp_sockets.get(&event.token()) {
-                    let buffer_index = self.buffer_index;
-                    while let Ok((buffer_size, addr)) =
-                        socket.socket.recv_from(&mut self.buffers[buffer_index])
-                    {
-                        self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
-                        self.output
-                            .push_back_stack(InQueue::UdpData {
-                                owner: socket.owner,
-                                from: addr,
-                                to: socket.local_addr,
-                                buffer_index,
-                                buffer_size,
-                            })
-                            .print_err("MioBackend output queue full");
-
-                        self.buffer_inqueue_count += 1;
-                        if self.buffer_inqueue_count >= QUEUE_PKT_NUM {
-                            log::warn!("Mio backend buffer full");
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if self.output.is_empty() {
-                return None;
-            }
+    fn pop_incoming(
+        &mut self,
+        timeout: Duration,
+        buf: &mut [u8],
+    ) -> Option<(BackendIncoming, Owner)> {
+        if let Some(e) = self.pop_cached_event(buf) {
+            return Some(e);
         }
+
+        if let Err(e) = self.poll.poll(&mut self.event_buffer, Some(timeout)) {
+            log::error!("Mio poll error {:?}", e);
+            return None;
+        }
+
+        for event in self.event_buffer.iter() {
+            self.event_buffer2
+                .push_back(event.token())
+                .expect("Should not full");
+        }
+
+        self.pop_cached_event(buf)
     }
 
     fn finish_outgoing_cycle(&mut self) {}
@@ -269,9 +249,9 @@ mod tests {
     use std::{net::SocketAddr, time::Duration};
 
     use crate::{
-        backend::{Backend, BackendOwner},
+        backend::{Backend, BackendIncoming, BackendOwner},
         task::Buffer,
-        NetIncoming, NetOutgoing, Owner,
+        NetOutgoing, Owner,
     };
 
     use super::MioBackend;
@@ -284,12 +264,14 @@ mod tests {
         let mut addr1 = None;
         let mut addr2 = None;
 
+        let mut buf = [0; 1500];
+
         backend.on_action(
             Owner::worker(1),
             NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))),
         );
-        match backend.pop_incoming(Duration::from_secs(1)) {
-            Some((NetIncoming::UdpListenResult { bind, result }, owner)) => {
+        match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+            Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
                 assert_eq!(owner, Owner::worker(1));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
                 addr1 = Some(result.expect("Expected Ok"));
@@ -301,8 +283,8 @@ mod tests {
             Owner::worker(2),
             NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))),
         );
-        match backend.pop_incoming(Duration::from_secs(1)) {
-            Some((NetIncoming::UdpListenResult { bind, result }, owner)) => {
+        match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+            Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
                 assert_eq!(owner, Owner::worker(2));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
                 addr2 = Some(result.expect("Expected Ok"));
@@ -320,12 +302,12 @@ mod tests {
             },
         );
 
-        match backend.pop_incoming(Duration::from_secs(1)) {
-            Some((NetIncoming::UdpPacket { from, to, data }, owner)) => {
+        match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+            Some((BackendIncoming::UdpPacket { from, to, len }, owner)) => {
                 assert_eq!(owner, Owner::worker(2));
                 assert_eq!(from, addr1.expect(""));
                 assert_eq!(to, addr2.expect(""));
-                assert_eq!(data, b"hello");
+                assert_eq!(&buf[0..len], b"hello");
             }
             _ => panic!("Expected UdpPacket"),
         }
