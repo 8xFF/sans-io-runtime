@@ -4,111 +4,123 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sans_io_runtime::{Controller, Input, MioBackend, NetIncoming, NetOutgoing, Output, Task};
+use sans_io_runtime::{
+    backend::MioBackend, Buffer, Controller, NetIncoming, NetOutgoing, Owner, TaskInput,
+    TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+};
 
 type ExtIn = ();
 type ExtOut = ();
-type MSG = ();
-struct EchoTaskCfg {
+type ChannelId = ();
+type Event = ();
+type ICfg = EchoWorkerCfg;
+type SCfg = ();
+
+struct EchoWorkerCfg {
     bind: SocketAddr,
 }
 
-enum EchoTaskInQueue {
+enum EchoWorkerInQueue {
     UdpListen(SocketAddr),
-    SendUdpPacket {
-        from: SocketAddr,
-        to: SocketAddr,
-        buf_index: usize,
-        len: usize,
-    },
-    Destroy,
 }
 
-struct EchoTask {
-    buffers: [[u8; 1500]; 512],
-    buffer_index: usize,
-    output: VecDeque<EchoTaskInQueue>,
+struct EchoWorker {
+    worker: u16,
+    output: VecDeque<EchoWorkerInQueue>,
 }
 
-impl EchoTask {
-    pub fn new(cfg: EchoTaskCfg) -> Self {
+impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
+    fn build(worker: u16, cfg: EchoWorkerCfg) -> Self {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
-            buffers: [[0; 1500]; 512],
-            buffer_index: 0,
-            output: VecDeque::from([EchoTaskInQueue::UdpListen(cfg.bind)]),
+            worker,
+            output: VecDeque::from([EchoWorkerInQueue::UdpListen(cfg.bind)]),
         }
     }
-}
 
-impl Task<ExtIn, ExtOut, MSG, EchoTaskCfg> for EchoTask {
-    fn build(cfg: EchoTaskCfg) -> Self {
-        Self::new(cfg)
+    fn worker_index(&self) -> u16 {
+        self.worker
     }
 
-    fn min_tick_interval(&self) -> Duration {
-        Duration::from_millis(1)
+    fn tasks(&self) -> usize {
+        1
     }
 
-    fn on_tick(&mut self, _now: Instant) {}
-
-    fn on_input<'b>(&mut self, _now: Instant, input: Input<'b, ExtIn, MSG>) {
-        match input {
-            Input::Net(NetIncoming::UdpListenResult { bind, result }) => {
+    fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
+    fn on_input_tick<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+        None
+    }
+    fn on_input_event<'a>(
+        &mut self,
+        _now: Instant,
+        event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+        match event {
+            WorkerInnerInput::Task(
+                _owner,
+                TaskInput::Net(NetIncoming::UdpListenResult { bind, result }),
+            ) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
+                None
             }
-            Input::Net(NetIncoming::UdpPacket { from, to, data }) => {
+            WorkerInnerInput::Task(
+                _owner,
+                TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+            ) => {
                 assert!(data.len() <= 1500, "data too large");
-                let buffer_index = self.buffer_index;
-                self.buffer_index = (self.buffer_index + 1) % self.buffers.len();
-                self.buffers[buffer_index][0..data.len()].copy_from_slice(data);
 
-                self.output.push_back(EchoTaskInQueue::SendUdpPacket {
-                    from: to,
-                    to: from,
-                    buf_index: buffer_index,
-                    len: data.len(),
-                });
-
-                if data == b"quit\n" {
-                    log::info!("Destroying task");
-                    self.output.push_back(EchoTaskInQueue::Destroy);
-                }
+                Some(WorkerInnerOutput::Task(
+                    Owner::worker(self.worker),
+                    TaskOutput::Net(NetOutgoing::UdpPacket {
+                        from: to,
+                        to: from,
+                        data: Buffer::Vec(data.to_vec()),
+                    }),
+                ))
             }
-            _ => unreachable!("EchoTask only has NetIncoming variants"),
+            _ => None,
         }
     }
 
-    fn pop_output(&mut self, _now: Instant) -> Option<Output<'_, ExtOut, MSG>> {
+    fn pop_last_input<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+        None
+    }
+
+    fn pop_output<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
         let out = self.output.pop_front()?;
         match out {
-            EchoTaskInQueue::UdpListen(bind) => Some(Output::Net(NetOutgoing::UdpListen(bind))),
-            EchoTaskInQueue::SendUdpPacket {
-                from,
-                to,
-                buf_index,
-                len,
-            } => Some(Output::Net(NetOutgoing::UdpPacket {
-                from,
-                to,
-                data: &self.buffers[buf_index][0..len],
-            })),
-            EchoTaskInQueue::Destroy => Some(Output::Destroy),
+            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
+                Owner::worker(self.worker),
+                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
+            )),
         }
     }
 }
 
 fn main() {
     env_logger::init();
-    let mut controller =
-        Controller::<ExtIn, ExtOut, MSG, EchoTask, EchoTaskCfg, MioBackend<usize>>::new(2);
-    controller.start();
-    controller.spawn(EchoTaskCfg {
-        bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
-    });
-    controller.spawn(EchoTaskCfg {
-        bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
-    });
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::new();
+    controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
+        EchoWorkerCfg {
+            bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
+        },
+        None,
+    );
+    controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
+        EchoWorkerCfg {
+            bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
+        },
+        None,
+    );
     loop {
         controller.process();
         std::thread::sleep(Duration::from_millis(100));

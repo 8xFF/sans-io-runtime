@@ -1,5 +1,5 @@
 use parking_lot::RwLock;
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc};
 
 mod leg;
 mod local_hub;
@@ -7,111 +7,158 @@ mod local_hub;
 pub use leg::*;
 pub use local_hub::*;
 
-#[derive(Hash, PartialEq, Eq, Debug, Clone, Copy)]
-pub struct BusChannelId(pub u64);
+pub enum BusEvent<ChannelId, MSG> {
+    ChannelSubscribe(ChannelId),
+    ChannelUnsubscribe(ChannelId),
+    /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
+    ChannelPublish(ChannelId, bool, MSG),
+}
 
-impl Deref for BusChannelId {
-    type Target = u64;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
+    pub fn high_priority(&self) -> bool {
+        match self {
+            Self::ChannelSubscribe(_) => true,
+            Self::ChannelUnsubscribe(_) => true,
+            Self::ChannelPublish(_, _, _) => false,
+        }
     }
 }
 
-pub enum BusEvent<MSG> {
-    ChannelSubscribe(BusChannelId),
-    ChannelUnsubscribe(BusChannelId),
-    ChannelPublish(BusChannelId, MSG),
-    Broadcast(MSG),
-    Direct(usize, MSG),
+pub trait BusSendSingleFeature<MSG> {
+    fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr>;
 }
 
-#[derive(Debug)]
-pub struct BusSystemBuilder<MSG> {
-    legs: Vec<BusLegSender<MSG>>,
+pub trait BusSendMultiFeature<MSG: Clone> {
+    fn broadcast(&self, safe: bool, msg: MSG);
 }
 
-impl<MSG> Default for BusSystemBuilder<MSG> {
+pub trait BusPubSubFeature<ChannelId, MSG: Clone> {
+    fn subscribe(&self, channel: ChannelId);
+    fn unsubscribe(&self, channel: ChannelId);
+    fn publish(&self, channel: ChannelId, safe: bool, msg: MSG);
+}
+
+pub struct BusSystemBuilder<ChannelId, MSG, const STACK_SIZE: usize> {
+    legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG, STACK_SIZE>>>>,
+    channels: Arc<RwLock<HashMap<ChannelId, Vec<usize>>>>,
+}
+
+impl<ChannelId, MSG, const STACK_SIZE: usize> Default
+    for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
+{
     fn default() -> Self {
-        Self { legs: Vec::new() }
-    }
-}
-
-impl<MSG> BusSystemBuilder<MSG> {
-    pub fn new_leg(&mut self) -> (BusLegReceiver<MSG>, usize) {
-        let leg_index = self.legs.len();
-        let (sender, recv) = create_bus_leg();
-        self.legs.push(sender);
-        (recv, leg_index)
-    }
-
-    pub fn build_local(&self, local_leg_index: usize) -> BusSystemLocal<MSG> {
-        BusSystemLocal {
-            local_leg_index,
-            legs: self.legs.clone(),
+        Self {
+            legs: Default::default(),
             channels: Default::default(),
         }
     }
 }
 
-pub trait BusSingleDest<MSG> {
-    fn send(&self, dest_leg: usize, msg: MSG) -> Result<usize, BusLegSenderErr>;
-}
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusSystemBuilder<ChannelId, MSG, STACK_SIZE> {
+    pub fn new_worker(&mut self) -> BusWorker<ChannelId, MSG, STACK_SIZE> {
+        let mut legs = self.legs.write();
+        let leg_index = legs.len();
+        let (sender, recv) = create_bus_leg();
+        legs.push(sender);
 
-pub trait BusMultiDest<MSG: Clone> {
-    fn subscribe(&self, channel: BusChannelId);
-    fn unsubscribe(&self, channel: BusChannelId);
-    fn publish(&self, channel: BusChannelId, msg: MSG);
-    fn broadcast(&self, msg: MSG);
-}
-
-#[derive(Debug, Default)]
-pub struct BusSystemLocal<MSG> {
-    local_leg_index: usize,
-    legs: Vec<BusLegSender<MSG>>,
-    channels: Arc<RwLock<HashMap<BusChannelId, Vec<usize>>>>,
-}
-
-impl<MSG> BusSingleDest<MSG> for BusSystemLocal<MSG> {
-    fn send(&self, dest_leg: usize, msg: MSG) -> Result<usize, BusLegSenderErr> {
-        self.legs[dest_leg].send(BusLegEvent::Direct(self.local_leg_index, msg))
+        BusWorker {
+            leg_index,
+            receiver: recv,
+            legs: self.legs.clone(),
+            channels: self.channels.clone(),
+        }
     }
 }
 
-impl<MSG: Clone> BusMultiDest<MSG> for BusSystemLocal<MSG> {
-    fn subscribe(&self, channel: BusChannelId) {
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusSendSingleFeature<MSG>
+    for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
+{
+    fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr> {
+        let legs = self.legs.read();
+        legs[dest_leg].send(BusEventSource::External, safe, msg)
+    }
+}
+
+impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
+    for BusSystemBuilder<ChannelId, MSG, STACK_SIZE>
+{
+    fn broadcast(&self, safe: bool, msg: MSG) {
+        let legs = self.legs.read();
+        for leg in &*legs {
+            let _ = leg.send(BusEventSource::External, safe, msg.clone());
+        }
+    }
+}
+
+pub struct BusWorker<ChannelId, MSG, const STACK_SIZE: usize> {
+    leg_index: usize,
+    receiver: BusLegReceiver<ChannelId, MSG, STACK_SIZE>,
+    legs: Arc<RwLock<Vec<BusLegSender<ChannelId, MSG, STACK_SIZE>>>>,
+    channels: Arc<RwLock<HashMap<ChannelId, Vec<usize>>>>,
+}
+
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusWorker<ChannelId, MSG, STACK_SIZE> {
+    pub fn leg_index(&self) -> usize {
+        self.leg_index
+    }
+
+    pub fn recv(&self) -> Option<(BusEventSource<ChannelId>, MSG)> {
+        self.receiver.recv()
+    }
+}
+
+impl<ChannelId, MSG, const STACK_SIZE: usize> BusSendSingleFeature<MSG>
+    for BusWorker<ChannelId, MSG, STACK_SIZE>
+{
+    fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr> {
+        let legs = self.legs.read();
+        legs[dest_leg].send(BusEventSource::Direct(self.leg_index), safe, msg)
+    }
+}
+
+impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
+    for BusWorker<ChannelId, MSG, STACK_SIZE>
+{
+    fn broadcast(&self, safe: bool, msg: MSG) {
+        let legs = self.legs.read();
+        for leg in &*legs {
+            let _ = leg.send(BusEventSource::Broadcast(self.leg_index), safe, msg.clone());
+        }
+    }
+}
+
+impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SIZE: usize>
+    BusPubSubFeature<ChannelId, MSG> for BusWorker<ChannelId, MSG, STACK_SIZE>
+{
+    fn subscribe(&self, channel: ChannelId) {
         let mut channels = self.channels.write();
         let entry = channels.entry(channel).or_insert_with(Vec::new);
-        if entry.contains(&self.local_leg_index) {
+        if entry.contains(&self.leg_index) {
             return;
         }
-        entry.push(self.local_leg_index);
+        entry.push(self.leg_index);
     }
 
-    fn unsubscribe(&self, channel: BusChannelId) {
+    fn unsubscribe(&self, channel: ChannelId) {
         let mut channels = self.channels.write();
         if let Some(entry) = channels.get_mut(&channel) {
-            if let Some(index) = entry.iter().position(|x| *x == self.local_leg_index) {
+            if let Some(index) = entry.iter().position(|x| *x == self.leg_index) {
                 entry.swap_remove(index);
             }
         }
     }
 
-    fn publish(&self, channel: BusChannelId, msg: MSG) {
+    fn publish(&self, channel: ChannelId, safe: bool, msg: MSG) {
+        let legs = self.legs.read();
         let channels = self.channels.read();
         if let Some(entry) = channels.get(&channel) {
             for &leg_index in entry {
-                let _ = self.legs[leg_index].send(BusLegEvent::Channel(
-                    self.local_leg_index,
-                    channel,
+                let _ = legs[leg_index].send(
+                    BusEventSource::Channel(self.leg_index, channel),
+                    safe,
                     msg.clone(),
-                ));
+                );
             }
-        }
-    }
-
-    fn broadcast(&self, msg: MSG) {
-        for leg in &self.legs {
-            let _ = leg.send(BusLegEvent::Broadcast(self.local_leg_index, msg.clone()));
         }
     }
 }

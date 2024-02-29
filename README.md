@@ -16,10 +16,10 @@ Controller will spawn some threads and each thread will run a worker. The worker
 
 | Impl | C/I | Works | Benchmark | Group   | Description                        |
 | ---- | --- | ----- | --------- | ------- | ---------------------------------- |
-| [x]  | [ ] | [ ]   | [ ]       | Control | Cross tasks communication          |
+| [x]  | [ ] | [x]   | [ ]       | Control | Cross tasks communication          |
 | [x]  | [ ] | [x]   | [ ]       | Control | Controller to worker communication |
 | [ ]  | [ ] | [ ]   | [ ]       | Control | Controller to task communication   |
-| [x]  | [ ] | [ ]   | [ ]       | Control | Workers status monitoring          |
+| [x]  | [ ] | [x]   | [ ]       | Control | Workers status monitoring          |
 | [x]  | [ ] | [x]   | [ ]       | I/O     | Udp                                |
 | [ ]  | [ ] | [ ]   | [ ]       | I/O     | Tcp                                |
 | [ ]  | [ ] | [ ]   | [ ]       | I/O     | Rpc                                |
@@ -27,8 +27,8 @@ Controller will spawn some threads and each thread will run a worker. The worker
 | [ ]  | [ ] | [ ]   | [ ]       | Backend | io_uring                           |
 | [ ]  | [ ] | [ ]   | [ ]       | Backend | af_xdp                             |
 | [x]  | [ ] | [x]   | [ ]       | Example | Udp echo server                    |
-| [x]  | [ ] | [ ]   | [ ]       | Example | Udp echo client                    |
-| [ ]  | [ ] | [ ]   | [ ]       | Example | Simple Whip/Whep server            |
+| [x]  | [ ] | [x]   | [ ]       | Example | Udp echo client                    |
+| [x]  | [ ] | [x]   | [ ]       | Example | Simple Whip/Whep server            |
 
 ## Design
 

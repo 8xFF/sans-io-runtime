@@ -1,15 +1,23 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
-use crate::BusChannelId;
+use crate::Owner;
 
-#[derive(Debug, Default)]
-pub struct BusLocalHub<Owner> {
-    channels: HashMap<BusChannelId, Vec<Owner>>,
+#[derive(Debug)]
+pub struct BusLocalHub<ChannelId: Hash + PartialEq + Eq> {
+    channels: HashMap<ChannelId, Vec<Owner>>,
 }
 
-impl<Owner: PartialEq + Eq + Clone + Copy> BusLocalHub<Owner> {
+impl<ChannelId: Hash + PartialEq + Eq> Default for BusLocalHub<ChannelId> {
+    fn default() -> Self {
+        Self {
+            channels: HashMap::new(),
+        }
+    }
+}
+
+impl<ChannelId: Debug + Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<ChannelId> {
     /// subscribe to a channel. if it is first time subscription, return true; else return false
-    pub fn subscribe(&mut self, channel: BusChannelId, owner: Owner) -> bool {
+    pub fn subscribe(&mut self, owner: Owner, channel: ChannelId) -> bool {
         let entry = self.channels.entry(channel).or_default();
         if entry.contains(&owner) {
             false
@@ -20,9 +28,12 @@ impl<Owner: PartialEq + Eq + Clone + Copy> BusLocalHub<Owner> {
     }
 
     /// unsubscribe from a channel. if it is last time unsubscription, return true; else return false
-    pub fn unsubscribe(&mut self, channel: BusChannelId, owner: Owner) -> bool {
+    pub fn unsubscribe(&mut self, owner: Owner, channel: ChannelId) -> bool {
+        log::info!("channels: {:?}", self.channels);
         if let Some(entry) = self.channels.get_mut(&channel) {
+            log::info!("remove owner {:?} with list {:?}", owner, entry);
             if let Some(pos) = entry.iter().position(|x| *x == owner) {
+                log::info!("remove owner {:?}", owner);
                 entry.swap_remove(pos);
                 if entry.is_empty() {
                     self.channels.remove(&channel);
@@ -39,25 +50,83 @@ impl<Owner: PartialEq + Eq + Clone + Copy> BusLocalHub<Owner> {
     }
 
     /// get all subscribers of a channel
-    pub fn get_subscribers(&self, channel: BusChannelId) -> Option<&[Owner]> {
-        self.channels.get(&channel).map(|x| x.as_slice())
+    pub fn get_subscribers(&self, channel: ChannelId) -> Option<Vec<Owner>> {
+        self.channels.get(&channel).map(|x: &Vec<Owner>| x.clone())
     }
 
     /// remove owner from all channels
     pub fn remove_owner(&mut self, owner: Owner) {
-        for (_, entry) in self.channels.iter_mut() {
+        let mut removed_channels = vec![];
+        for (channel, entry) in self.channels.iter_mut() {
             if let Some(pos) = entry.iter().position(|x| x == &owner) {
                 entry.swap_remove(pos);
             }
-        }
-    }
-
-    /// remove owner from all channels
-    pub fn swap_owner(&mut self, from: Owner, to: Owner) {
-        for (_, entry) in self.channels.iter_mut() {
-            if let Some(pos) = entry.iter().position(|x| x == &from) {
-                entry[pos] = to;
+            if entry.is_empty() {
+                removed_channels.push(*channel);
             }
         }
+        for channel in removed_channels {
+            self.channels.remove(&channel);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+    enum Channel {
+        A,
+        B,
+        C,
+    }
+
+    #[test]
+    fn test_subscribe_unsubscribe() {
+        let mut hub: BusLocalHub<Channel> = BusLocalHub::default();
+        let owner1 = Owner::worker(1);
+        let owner2 = Owner::worker(2);
+
+        assert_eq!(hub.subscribe(owner1, Channel::A), true);
+        assert_eq!(hub.subscribe(owner2, Channel::A), false);
+        assert_eq!(hub.subscribe(owner1, Channel::B), true);
+        assert_eq!(hub.subscribe(owner1, Channel::C), true);
+
+        assert_eq!(hub.unsubscribe(owner1, Channel::A), false);
+        assert_eq!(hub.unsubscribe(owner2, Channel::A), true);
+        assert_eq!(hub.unsubscribe(owner1, Channel::B), true);
+        assert_eq!(hub.unsubscribe(owner1, Channel::C), true);
+    }
+
+    #[test]
+    fn test_get_subscribers() {
+        let mut hub: BusLocalHub<Channel> = BusLocalHub::default();
+        let owner1 = Owner::worker(1);
+        let owner2 = Owner::worker(2);
+
+        hub.subscribe(owner1, Channel::A);
+        hub.subscribe(owner1, Channel::B);
+        hub.subscribe(owner2, Channel::A);
+
+        assert_eq!(hub.get_subscribers(Channel::A), Some(vec![owner1, owner2]));
+        assert_eq!(hub.get_subscribers(Channel::B), Some(vec![owner1]));
+        assert_eq!(hub.get_subscribers(Channel::C), None);
+    }
+
+    #[test]
+    fn test_remove_owner() {
+        let mut hub: BusLocalHub<Channel> = BusLocalHub::default();
+        let owner1 = Owner::worker(1);
+        let owner2 = Owner::worker(2);
+
+        hub.subscribe(owner1, Channel::A);
+        hub.subscribe(owner1, Channel::B);
+        hub.subscribe(owner2, Channel::A);
+
+        hub.remove_owner(owner1);
+
+        assert_eq!(hub.get_subscribers(Channel::A), Some(vec![owner2]));
+        assert_eq!(hub.get_subscribers(Channel::B), None);
     }
 }

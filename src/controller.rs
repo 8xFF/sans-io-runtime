@@ -1,11 +1,13 @@
-use std::collections::VecDeque;
+use std::{fmt::Debug, hash::Hash};
 
 use crate::{
     backend::Backend,
-    bus::{BusLegEvent, BusLegReceiver, BusSingleDest, BusSystemBuilder, BusSystemLocal},
-    task::Task,
-    worker::{self, WorkerControlIn, WorkerControlOut, WorkerStats},
+    bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder, BusWorker},
+    collections::DynamicDeque,
+    worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
 };
+
+const DEFAULT_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 struct WorkerContainer {
     _join: std::thread::JoinHandle<()>,
@@ -13,95 +15,106 @@ struct WorkerContainer {
 }
 
 pub struct Controller<
-    ExtIn,
-    ExtOut,
-    MSG: 'static + Clone + Send + Sync,
-    T: Task<ExtIn, ExtOut, MSG, TCfg>,
-    TCfg,
-    B: Backend<usize>,
+    ExtIn: Clone,
+    ExtOut: Clone,
+    SCfg: Clone,
+    ChannelId,
+    Event,
+    const INNER_BUS_STACK: usize,
 > {
-    workers: usize,
-    worker_control_bus: BusSystemLocal<WorkerControlIn<TCfg>>,
-    worker_control_recv: VecDeque<(BusLegReceiver<WorkerControlIn<TCfg>>, usize)>,
-    worker_event_bus: BusSystemBuilder<WorkerControlOut>,
-    worker_event_recv: BusLegReceiver<WorkerControlOut>,
-    _tmp: std::marker::PhantomData<(ExtIn, ExtOut, MSG, T, B)>,
+    worker_inner_bus: BusSystemBuilder<ChannelId, Event, INNER_BUS_STACK>,
+    worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
+    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>, 16>,
+    worker_event: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
     worker_threads: Vec<WorkerContainer>,
+    output: DynamicDeque<ExtOut, 16>,
 }
 
 impl<
-        ExtIn,
-        ExtOut,
-        MSG: 'static + Send + Sync + Clone,
-        T: Task<ExtIn, ExtOut, MSG, TCfg>,
-        TCfg: 'static + Send + Sync,
-        B: Backend<usize>,
-    > Controller<ExtIn, ExtOut, MSG, T, TCfg, B>
+        ExtIn: 'static + Send + Sync + Clone,
+        ExtOut: 'static + Send + Sync + Clone,
+        SCfg: 'static + Send + Sync + Clone,
+        ChannelId: 'static + Debug + Clone + Copy + Hash + PartialEq + Eq + Send + Sync,
+        Event: 'static + Send + Sync + Clone,
+        const INNER_BUS_STACK: usize,
+    > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event, INNER_BUS_STACK>
 {
-    pub fn new(workers: usize) -> Self {
-        let mut worker_control_bus = BusSystemBuilder::default();
-        let mut worker_control_recv = VecDeque::new();
-        for _ in 0..workers {
-            worker_control_recv.push_back(worker_control_bus.new_leg());
-        }
+    pub fn new() -> Self {
+        let worker_control_bus = BusSystemBuilder::default();
         let mut worker_event_bus = BusSystemBuilder::default();
-        let (worker_event_recv, current_leg_index) = worker_event_bus.new_leg();
+        let worker_event = worker_event_bus.new_worker();
 
         Self {
-            workers,
-            worker_control_bus: worker_control_bus.build_local(current_leg_index),
-            worker_control_recv,
-            worker_event_bus: worker_event_bus,
-            worker_event_recv,
-            _tmp: Default::default(),
+            worker_inner_bus: BusSystemBuilder::default(),
+            worker_control_bus,
+            worker_event_bus,
+            worker_event,
             worker_threads: Vec::new(),
+            output: DynamicDeque::new(),
         }
     }
 
-    pub fn start(&mut self) {
-        log::info!("Starting {} workers", self.workers);
-        let mut internal_bus = BusSystemBuilder::default();
-        let mut internal_recv = VecDeque::new();
-        for _ in 0..self.workers {
-            internal_recv.push_back(internal_bus.new_leg());
-        }
+    pub fn add_worker<
+        ICfg: 'static + Send + Sync,
+        Inner: WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
+        B: Backend,
+    >(
+        &mut self,
+        cfg: ICfg,
+        stack_size: Option<usize>,
+    ) {
+        let worker_in = self.worker_control_bus.new_worker();
+        let worker_out = self.worker_event_bus.new_worker();
+        let worker_inner = self.worker_inner_bus.new_worker();
 
-        for i in 1..=self.workers {
-            let (worker_control_recv, worker_event_index) = self
-                .worker_control_recv
-                .pop_front()
-                .expect("Should have worker control recv");
-            let worker_event_bus = self.worker_event_bus.build_local(worker_event_index);
-            let (internal_recv, internal_leg_index) = internal_recv
-                .pop_front()
-                .expect("Should have internal recv");
-            let internal_bus = internal_bus.build_local(internal_leg_index);
-            let join = std::thread::spawn(move || {
-                log::info!("Worker {} started", i);
-                let mut worker = worker::Worker::<ExtIn, ExtOut, MSG, T, TCfg, B>::new(
-                    worker_event_bus,
-                    worker_control_recv,
-                    internal_bus,
-                    internal_recv,
+        let stack_size = stack_size.unwrap_or(DEFAULT_STACK_SIZE);
+        log::info!("create worker with stack size: {}", stack_size);
+        let join = std::thread::Builder::new()
+            .stack_size(stack_size)
+            .spawn(move || {
+                let mut worker = worker::Worker::<
+                    ExtIn,
+                    ExtOut,
+                    ChannelId,
+                    Event,
+                    Inner,
+                    ICfg,
+                    SCfg,
+                    B,
+                    INNER_BUS_STACK,
+                >::new(
+                    Inner::build(worker_in.leg_index() as u16, cfg),
+                    worker_inner,
+                    worker_out,
+                    worker_in,
                 );
                 loop {
                     worker.process();
                 }
-            });
-            self.worker_threads.push(WorkerContainer {
-                _join: join,
-                stats: Default::default(),
-            });
-        }
+            })
+            .expect("Should spawn worker thread");
+        self.worker_threads.push(WorkerContainer {
+            _join: join,
+            stats: Default::default(),
+        });
     }
 
     pub fn process(&mut self) {
-        while let Some(event) = self.worker_event_recv.recv() {
-            match event {
-                BusLegEvent::Direct(source_leg, WorkerControlOut::Stats(stats)) => {
-                    log::trace!("Worker stats: {:?}", stats);
-                    self.worker_threads[source_leg].stats = stats;
-                }
+        self.worker_control_bus
+            .broadcast(true, WorkerControlIn::StatsRequest);
+        while let Some((source, event)) = self.worker_event.recv() {
+            match (source, event) {
+                (BusEventSource::Direct(source_leg), event) => match event {
+                    WorkerControlOut::Stats(stats) => {
+                        log::debug!("Worker stats: {:?}", stats);
+                        // source_leg is 1-based because of 0 is for controller
+                        // TODO avoid -1, should not hack this way
+                        self.worker_threads[source_leg - 1].stats = stats;
+                    }
+                    WorkerControlOut::Ext(event) => {
+                        self.output.push_back_safe(event);
+                    }
+                },
                 _ => {
                     unreachable!("WorkerControlOut only has Stats variant");
                 }
@@ -109,7 +122,7 @@ impl<
         }
     }
 
-    pub fn spawn(&mut self, cfg: TCfg) {
+    pub fn spawn(&mut self, cfg: SCfg) {
         // get worker index with lowest load
         let best_worker = self
             .worker_threads
@@ -121,9 +134,13 @@ impl<
         self.worker_threads[best_worker].stats.tasks += 1;
         if let Err(e) = self
             .worker_control_bus
-            .send(best_worker, WorkerControlIn::Spawn(cfg))
+            .send(best_worker, true, WorkerControlIn::Spawn(cfg))
         {
             log::error!("Failed to spawn task: {:?}", e);
         }
+    }
+
+    pub fn pop_event(&mut self) -> Option<ExtOut> {
+        self.output.pop_front()
     }
 }
