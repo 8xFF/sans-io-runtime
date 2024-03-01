@@ -100,7 +100,7 @@ impl<
             match (source, event) {
                 (BusEventSource::Direct(source_leg), event) => match event {
                     WorkerControlOut::Stats(stats) => {
-                        log::debug!("Worker stats: {:?}", stats);
+                        log::trace!("Worker {source_leg} stats: {:?}", stats);
                         // source_leg is 1-based because of 0 is for controller
                         // TODO avoid -1, should not hack this way
                         self.worker_threads[source_leg - 1].stats = stats;

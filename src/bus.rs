@@ -22,6 +22,18 @@ impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
             Self::ChannelPublish(_, _, _) => false,
         }
     }
+
+    pub fn convert_into<NChannelId: From<ChannelId>, NMSG: From<MSG>>(
+        self,
+    ) -> BusEvent<NChannelId, NMSG> {
+        match self {
+            Self::ChannelSubscribe(channel) => BusEvent::ChannelSubscribe(channel.into()),
+            Self::ChannelUnsubscribe(channel) => BusEvent::ChannelUnsubscribe(channel.into()),
+            Self::ChannelPublish(channel, safe, msg) => {
+                BusEvent::ChannelPublish(channel.into(), safe, msg.into())
+            }
+        }
+    }
 }
 
 pub trait BusSendSingleFeature<MSG> {

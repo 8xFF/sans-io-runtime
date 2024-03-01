@@ -8,11 +8,12 @@ pub struct TaskGroupInput<'a, ChannelId, Event>(pub Owner, pub TaskInput<'a, Cha
 /// Represents the output of a task group.
 pub struct TaskGroupOutput<'a, ChannelId, Event>(pub Owner, pub TaskOutput<'a, ChannelId, Event>);
 
-impl<'a, ExtOut, ChannelId, Event, SCfg> Into<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>
+impl<'a, ChannelId, Event, IExtOut, IChannelId: From<ChannelId>, IEvent: From<Event>, ISCfg>
+    Into<WorkerInnerOutput<'a, IExtOut, IChannelId, IEvent, ISCfg>>
     for TaskGroupOutput<'a, ChannelId, Event>
 {
-    fn into(self) -> WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg> {
-        WorkerInnerOutput::Task(self.0, self.1)
+    fn into(self) -> WorkerInnerOutput<'a, IExtOut, IChannelId, IEvent, ISCfg> {
+        WorkerInnerOutput::Task(self.0, self.1.convert_into())
     }
 }
 
