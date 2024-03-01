@@ -243,7 +243,7 @@ impl<
 
     fn on_input_event(
         now: Instant,
-        input: WorkerInnerInput<'_, ExtIn, ChannelId, Event>,
+        input: WorkerInnerInput<ExtIn, ChannelId, Event>,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
@@ -267,7 +267,7 @@ impl<
     }
 
     fn process_inner_output(
-        out: WorkerInnerOutput<'_, ExtOut, ChannelId, Event, SCfg>,
+        out: WorkerInnerOutput<ExtOut, ChannelId, Event, SCfg>,
         worker: u16,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
