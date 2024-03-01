@@ -9,11 +9,11 @@ pub struct TaskGroupInput<'a, ChannelId, Event>(pub Owner, pub TaskInput<'a, Cha
 pub struct TaskGroupOutput<'a, ChannelId, Event>(pub Owner, pub TaskOutput<'a, ChannelId, Event>);
 
 impl<'a, ChannelId, Event, IExtOut, IChannelId: From<ChannelId>, IEvent: From<Event>, ISCfg>
-    Into<WorkerInnerOutput<'a, IExtOut, IChannelId, IEvent, ISCfg>>
-    for TaskGroupOutput<'a, ChannelId, Event>
+    From<TaskGroupOutput<'a, ChannelId, Event>>
+    for WorkerInnerOutput<'a, IExtOut, IChannelId, IEvent, ISCfg>
 {
-    fn into(self) -> WorkerInnerOutput<'a, IExtOut, IChannelId, IEvent, ISCfg> {
-        WorkerInnerOutput::Task(self.0, self.1.convert_into())
+    fn from(value: TaskGroupOutput<'a, ChannelId, Event>) -> Self {
+        WorkerInnerOutput::Task(value.0, value.1.convert_into())
     }
 }
 
@@ -43,11 +43,11 @@ impl<
     pub fn new(worker: u16) -> Self {
         Self {
             worker,
-            tasks: DynamicVec::new(),
-            _tmp: PhantomData::default(),
+            tasks: DynamicVec::default(),
+            _tmp: Default::default(),
             next_tick_index: None,
             last_input_index: None,
-            destroy_list: DynamicVec::new(),
+            destroy_list: DynamicVec::default(),
         }
     }
 

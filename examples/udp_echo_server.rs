@@ -100,7 +100,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::new();
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::default();
     controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
         EchoWorkerCfg {
             bind: SocketAddr::from(([127, 0, 0, 1], 10001)),

@@ -217,7 +217,7 @@ impl<
         log::debug!("Worker process done in {}", now.elapsed().as_nanos());
     }
 
-    fn on_input_tick<'a>(
+    fn on_input_tick(
         now: Instant,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
@@ -241,9 +241,9 @@ impl<
         }
     }
 
-    fn on_input_event<'a>(
+    fn on_input_event(
         now: Instant,
-        input: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
+        input: WorkerInnerInput<'_, ExtIn, ChannelId, Event>,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
@@ -266,8 +266,8 @@ impl<
         }
     }
 
-    fn process_inner_output<'a>(
-        out: WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>,
+    fn process_inner_output(
+        out: WorkerInnerOutput<'_, ExtOut, ChannelId, Event, SCfg>,
         worker: u16,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,

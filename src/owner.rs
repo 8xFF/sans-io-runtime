@@ -1,23 +1,23 @@
-///! This module contains the `Owner` type, which represents the owner of a task or group of tasks in the runtime.
-///! Example:
-///! ```
-///! use sans_io_runtime::Owner;
-///!
-///! let owner = Owner::worker(1);
-///! assert_eq!(owner.worker_id(), 1);
-///! assert_eq!(owner.group_id(), None);
-///! assert_eq!(owner.task_index(), None);
-///!
-///! let owner = Owner::group(1, 2);
-///! assert_eq!(owner.worker_id(), 1);
-///! assert_eq!(owner.group_id(), Some(2));
-///! assert_eq!(owner.task_index(), None);
-///!
-///! let owner = Owner::task(1, 2, 3);
-///! assert_eq!(owner.worker_id(), 1);
-///! assert_eq!(owner.group_id(), Some(2));
-///! assert_eq!(owner.task_index(), Some(3));
-///! ```
+//! This module contains the `Owner` type, which represents the owner of a task or group of tasks in the runtime.
+//! Example:
+//! ```
+//! use sans_io_runtime::Owner;
+//!
+//! let owner = Owner::worker(1);
+//! assert_eq!(owner.worker_id(), 1);
+//! assert_eq!(owner.group_id(), None);
+//! assert_eq!(owner.task_index(), None);
+//!
+//! let owner = Owner::group(1, 2);
+//! assert_eq!(owner.worker_id(), 1);
+//! assert_eq!(owner.group_id(), Some(2));
+//! assert_eq!(owner.task_index(), None);
+//!
+//! let owner = Owner::task(1, 2, 3);
+//! assert_eq!(owner.worker_id(), 1);
+//! assert_eq!(owner.group_id(), Some(2));
+//! assert_eq!(owner.task_index(), Some(3));
+//! ```
 
 /// Represents the owner of a task or group of tasks in the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

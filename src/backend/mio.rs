@@ -131,7 +131,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
             event_buffer2: heapless::Deque::new(),
             udp_sockets: heapless::FnvIndexMap::new(),
-            output: DynamicDeque::new(),
+            output: DynamicDeque::default(),
         }
     }
 }

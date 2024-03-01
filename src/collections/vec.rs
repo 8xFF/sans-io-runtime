@@ -45,19 +45,20 @@ pub struct DynamicVec<T, const STACK_SIZE: usize> {
     heap: Vec<T>,
 }
 
-#[allow(unused)]
-impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
-    /// Creates a new instance of `DynamicVec`.
-    pub fn new() -> Self {
+impl<T, const STACK_SIZE: usize> Default for DynamicVec<T, STACK_SIZE> {
+    fn default() -> Self {
         Self {
             stack: heapless::Vec::new(),
             heap: Vec::new(),
         }
     }
+}
 
+#[allow(unused)]
+impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
     /// Creates a new instance of `DynamicVec` from an array of elements.
     pub fn from<const SIZE: usize>(prepare: [T; SIZE]) -> Self {
-        let mut instance = Self::new();
+        let mut instance = DynamicVec::<T, STACK_SIZE>::default();
         for item in prepare {
             instance.push_safe(item);
         }
@@ -147,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let vec: DynamicVec<u32, 10> = DynamicVec::new();
+        let vec: DynamicVec<u32, 10> = DynamicVec::default();
         assert!(vec.is_empty());
         assert_eq!(vec.len(), 0);
     }
@@ -164,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_push() {
-        let mut vec: DynamicVec<u32, 2> = DynamicVec::new();
+        let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
         assert_eq!(vec.push(true, 1), Ok(()));
         assert_eq!(vec.push(true, 2), Ok(()));
         assert_eq!(vec.push(true, 3), Ok(()));
@@ -177,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_push_stack() {
-        let mut vec: DynamicVec<u32, 2> = DynamicVec::new();
+        let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
         assert_eq!(vec.push_stack(1), Ok(()));
         assert_eq!(vec.push_stack(2), Ok(()));
         assert_eq!(vec.push_stack(3), Err(3));
@@ -188,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_push_safe() {
-        let mut vec: DynamicVec<u32, 2> = DynamicVec::new();
+        let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
         vec.push_safe(1);
         vec.push_safe(2);
         vec.push_safe(3);
@@ -203,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_pop() {
-        let mut vec: DynamicVec<u32, 2> = DynamicVec::new();
+        let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
         vec.push_safe(1);
         vec.push_safe(2);
         assert_eq!(vec.pop(), Some(2));

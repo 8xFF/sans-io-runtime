@@ -256,7 +256,7 @@ fn main() {
     env_logger::init();
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
-        Controller::<TestExtIn, TestExtOut, TestSCfg, TestChannel, TestEvent, 1024>::new();
+        Controller::<TestExtIn, TestExtOut, TestSCfg, TestChannel, TestEvent, 1024>::default();
     controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
     controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
 

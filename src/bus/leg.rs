@@ -17,12 +17,15 @@ pub enum BusLegSenderErr {
     ChannelFull,
 }
 
+type SharedBusQueue<ChannelId, MSG, const STATIC_SIZE: usize> =
+    Arc<Mutex<DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>>>;
+
 /// A sender for a bus leg.
 ///
 /// This struct is used to send messages through a bus leg. It holds a queue of messages
 /// that are waiting to be processed by the bus leg.
 pub struct BusLegSender<ChannelId, MSG, const STATIC_SIZE: usize> {
-    queue: Arc<Mutex<DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>>>,
+    queue: SharedBusQueue<ChannelId, MSG, STATIC_SIZE>,
 }
 
 impl<ChannelId, MSG, const STATIC_SIZE: usize> Clone for BusLegSender<ChannelId, MSG, STATIC_SIZE> {
@@ -81,7 +84,7 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegSender<ChannelId, MSG, STAT
 /// This struct is used to receive messages from a bus leg. It holds a queue of messages
 /// that have been sent to the bus leg.
 pub struct BusLegReceiver<ChannelId, MSG, const STATIC_SIZE: usize> {
-    queue: Arc<Mutex<DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>>>,
+    queue: SharedBusQueue<ChannelId, MSG, STATIC_SIZE>,
 }
 
 impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegReceiver<ChannelId, MSG, STATIC_SIZE> {
@@ -106,7 +109,7 @@ pub fn create_bus_leg<ChannelId, MSG, const STATIC_SIZE: usize>() -> (
     BusLegSender<ChannelId, MSG, STATIC_SIZE>,
     BusLegReceiver<ChannelId, MSG, STATIC_SIZE>,
 ) {
-    let queue = Arc::new(Mutex::new(DynamicDeque::new()));
+    let queue = Arc::new(Mutex::new(DynamicDeque::default()));
     let sender = BusLegSender {
         queue: queue.clone(),
     };

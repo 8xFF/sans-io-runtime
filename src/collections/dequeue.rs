@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 /// Example:
 /// ```
 /// use sans_io_runtime::collections::DynamicDeque;
-/// let mut deque: DynamicDeque<i32, 5> = DynamicDeque::new();
+/// let mut deque: DynamicDeque<i32, 5> = DynamicDeque::default();
 /// deque.push_back(true, 1).unwrap();
 /// deque.push_back(true, 2).unwrap();
 /// deque.push_back(true, 3).unwrap();
@@ -21,16 +21,17 @@ pub struct DynamicDeque<T, const STACK_SIZE: usize> {
     heap: VecDeque<T>,
 }
 
-#[allow(unused)]
-impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
-    /// Creates a new instance of `DynamicDeque`.
-    pub fn new() -> Self {
+impl<T, const STACK_SIZE: usize> Default for DynamicDeque<T, STACK_SIZE> {
+    fn default() -> Self {
         Self {
             stack: heapless::Deque::new(),
             heap: VecDeque::new(),
         }
     }
+}
 
+#[allow(unused)]
+impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
     /// Creates a new instance of `DynamicDeque` from an array of elements.
     ///
     /// # Arguments
@@ -41,7 +42,7 @@ impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
     ///
     /// A new instance of `DynamicDeque`.
     pub fn from<const SIZE: usize>(prepare: [T; SIZE]) -> Self {
-        let mut instance = Self::new();
+        let mut instance = Self::default();
         for item in prepare {
             instance.push_back_safe(item);
         }
@@ -134,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_push_back() {
-        let mut deque: DynamicDeque<i32, 2> = DynamicDeque::new();
+        let mut deque: DynamicDeque<i32, 2> = DynamicDeque::default();
         assert!(deque.push_back(false, 1).is_ok());
         assert!(deque.push_back(false, 2).is_ok());
         assert!(deque.push_back(false, 3).is_err());
@@ -144,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_pop_front() {
-        let mut deque: DynamicDeque<i32, 2> = DynamicDeque::new();
+        let mut deque: DynamicDeque<i32, 2> = DynamicDeque::default();
         deque.push_back(true, 1).unwrap();
         deque.push_back(true, 2).unwrap();
         deque.push_back(true, 3).unwrap();
@@ -157,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_is_empty() {
-        let mut deque: DynamicDeque<i32, 2> = DynamicDeque::new();
+        let mut deque: DynamicDeque<i32, 2> = DynamicDeque::default();
         assert_eq!(deque.is_empty(), true);
         deque.push_back(true, 1).unwrap();
         assert_eq!(deque.is_empty(), false);

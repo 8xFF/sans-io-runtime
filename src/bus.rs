@@ -155,7 +155,7 @@ impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SI
 {
     fn subscribe(&self, channel: ChannelId) {
         let mut channels = self.channels.write();
-        let entry = channels.entry(channel).or_insert_with(Vec::new);
+        let entry = channels.entry(channel).or_default();
         if entry.contains(&self.leg_index) {
             return;
         }
