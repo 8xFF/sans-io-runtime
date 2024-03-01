@@ -58,7 +58,7 @@ impl WhipTask {
             audio_mid: None,
             video_mid: None,
             channel_id: channel,
-            output: DynamicDeque::new(),
+            output: DynamicDeque::default(),
         };
 
         Ok(WhipTaskBuildResult {
