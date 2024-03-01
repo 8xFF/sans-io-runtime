@@ -91,7 +91,7 @@ pub struct SfuWorker {
     dtls_cert: DtlsCert,
     whip_group: TaskGroup<ChannelId, SfuEvent, WhipTask, 128>,
     whep_group: TaskGroup<ChannelId, SfuEvent, WhepTask, 128>,
-    output: VecDeque<WorkerInnerOutput<'static, ExtOut, ChannelId, SfuEvent>>,
+    output: VecDeque<WorkerInnerOutput<'static, ExtOut, ChannelId, SfuEvent, SCfg>>,
     shared_udp: SharedUdpPort<TaskId>,
     last_input: Option<u16>,
     groups_output: TaskGroupOutputsState<2>,
@@ -249,7 +249,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
     fn on_input_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
         if let Some(e) = self.output.pop_front() {
             return Some(e.into());
         }
@@ -291,7 +291,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, SfuEvent>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
         match event {
             WorkerInnerInput::Task(owner, event) => match event {
                 TaskInput::Net(NetIncoming::UdpListenResult { bind: _, result }) => {
@@ -364,7 +364,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
     fn pop_last_input<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
         match self.last_input? {
             WhipTask::TYPE => self.whip_group.pop_last_input(now).map(|o| o.into()),
             WhepTask::TYPE => self.whep_group.pop_last_input(now).map(|o| o.into()),

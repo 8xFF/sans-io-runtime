@@ -2,9 +2,10 @@ use std::{fmt::Debug, hash::Hash};
 
 use crate::{
     backend::Backend,
-    bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder, BusWorker},
+    bus::{BusEventSource, BusSendSingleFeature, BusSystemBuilder, BusWorker},
     collections::DynamicDeque,
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
+    ErrorDebugger,
 };
 
 const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;
@@ -17,15 +18,15 @@ struct WorkerContainer {
 pub struct Controller<
     ExtIn: Clone,
     ExtOut: Clone,
-    SCfg: Clone,
+    SCfg,
     ChannelId,
     Event,
     const INNER_BUS_STACK: usize,
 > {
     worker_inner_bus: BusSystemBuilder<ChannelId, Event, INNER_BUS_STACK>,
     worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
-    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>, 16>,
-    worker_event: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
+    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+    worker_event: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
     worker_threads: Vec<WorkerContainer>,
     output: DynamicDeque<ExtOut, 16>,
 }
@@ -33,7 +34,7 @@ pub struct Controller<
 impl<
         ExtIn: 'static + Send + Sync + Clone,
         ExtOut: 'static + Send + Sync + Clone,
-        SCfg: 'static + Send + Sync + Clone,
+        SCfg: 'static + Send + Sync,
         ChannelId: 'static + Debug + Clone + Copy + Hash + PartialEq + Eq + Send + Sync,
         Event: 'static + Send + Sync + Clone,
         const INNER_BUS_STACK: usize,
@@ -90,8 +91,11 @@ impl<
     }
 
     pub fn process(&mut self) {
-        self.worker_control_bus
-            .broadcast(true, WorkerControlIn::StatsRequest);
+        for i in 0..self.worker_threads.len() {
+            self.worker_control_bus
+                .send(i, false, WorkerControlIn::StatsRequest)
+                .print_err("Query worker stats full");
+        }
         while let Some((source, event)) = self.worker_event.recv() {
             match (source, event) {
                 (BusEventSource::Direct(source_leg), event) => match event {
@@ -103,6 +107,9 @@ impl<
                     }
                     WorkerControlOut::Ext(event) => {
                         self.output.push_back_safe(event);
+                    }
+                    WorkerControlOut::Spawn(cfg) => {
+                        self.spawn(cfg);
                     }
                 },
                 _ => {

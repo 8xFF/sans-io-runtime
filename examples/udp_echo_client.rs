@@ -147,7 +147,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn on_input_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         loop {
             match self.group_state.current()? {
                 0 => match self.echo_type1.on_input_tick(now) {
@@ -175,7 +175,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Task(owner, event) => match owner.group_id() {
                 Some(0) => {
@@ -201,7 +201,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn pop_last_input<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match self.last_input_index? {
             0 => self.echo_type1.pop_last_input(now).map(|a| a.into()),
             1 => self.echo_type2.pop_last_input(now).map(|a| a.into()),

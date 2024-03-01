@@ -50,7 +50,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     fn on_input_tick<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match self.output.pop_front()? {
             EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
                 Owner::worker(self.worker),
@@ -62,7 +62,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         &mut self,
         _now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Task(
                 _owner,
@@ -93,7 +93,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     fn pop_last_input<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         None
     }
 }
