@@ -9,16 +9,16 @@
 ///
 /// let mut state = TaskGroupOutputsState::<2>::default();
 /// assert_eq!(state.current(), Some(0));
-/// state.finish_current();
+/// state.process(Some(1));
 /// assert_eq!(state.current(), Some(1));
-/// state.finish_current();
+/// state.process(Some(2));
 /// assert_eq!(state.current(), None);
 ///
 /// // next cycle
 /// assert_eq!(state.current(), Some(0));
-/// state.finish_current();
+/// state.process(Some(3));
 /// assert_eq!(state.current(), Some(1));
-/// state.finish_current();
+/// state.process(Some(4));
 /// assert_eq!(state.current(), None);
 /// ```
 #[derive(Default)]
@@ -38,8 +38,11 @@ impl<const LEN: u16> TaskGroupOutputsState<LEN> {
     }
 
     /// Flag that the current task group is finished.
-    pub fn finish_current(&mut self) {
-        self.current_index += 1;
+    pub fn process<R>(&mut self, res: Option<R>) -> Option<R> {
+        if res.is_some() {
+            self.current_index += 1;
+        }
+        res
     }
 }
 
@@ -51,16 +54,16 @@ mod tests {
     fn test_group_outputs() {
         let mut state = TaskGroupOutputsState::<2>::default();
         assert_eq!(state.current(), Some(0));
-        state.finish_current();
+        state.process(Some(1));
         assert_eq!(state.current(), Some(1));
-        state.finish_current();
+        state.process(Some(1));
         assert_eq!(state.current(), None);
 
         // next cycle
         assert_eq!(state.current(), Some(0));
-        state.finish_current();
+        state.process(Some(1));
         assert_eq!(state.current(), Some(1));
-        state.finish_current();
+        state.process(Some(1));
         assert_eq!(state.current(), None);
     }
 }

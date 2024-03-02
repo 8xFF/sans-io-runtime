@@ -56,16 +56,16 @@ pub trait WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
     fn spawn(&mut self, now: Instant, cfg: SCfg);
-    fn on_input_tick<'a>(
+    fn on_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>;
-    fn on_input_event<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>;
-    fn pop_last_input<'a>(
+    fn pop_output<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>;
@@ -226,9 +226,9 @@ impl<
         bus_local_hub: &mut BusLocalHub<ChannelId>,
     ) {
         let worker = inner.worker_index();
-        while let Some(out) = inner.on_input_tick(now) {
+        while let Some(out) = inner.on_tick(now) {
             Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
-            while let Some(out) = inner.pop_last_input(now) {
+            while let Some(out) = inner.pop_output(now) {
                 Self::process_inner_output(
                     out,
                     worker,
@@ -251,9 +251,9 @@ impl<
         bus_local_hub: &mut BusLocalHub<ChannelId>,
     ) {
         let worker = inner.worker_index();
-        if let Some(out) = inner.on_input_event(now, input) {
+        if let Some(out) = inner.on_event(now, input) {
             Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
-            while let Some(out) = inner.pop_last_input(now) {
+            while let Some(out) = inner.pop_output(now) {
                 Self::process_inner_output(
                     out,
                     worker,

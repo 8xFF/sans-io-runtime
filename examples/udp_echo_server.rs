@@ -47,7 +47,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     }
 
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
-    fn on_input_tick<'a>(
+    fn on_tick<'a>(
         &mut self,
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
@@ -58,7 +58,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
             )),
         }
     }
-    fn on_input_event<'a>(
+    fn on_event<'a>(
         &mut self,
         _now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
@@ -90,7 +90,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         }
     }
 
-    fn pop_last_input<'a>(
+    fn pop_output<'a>(
         &mut self,
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {

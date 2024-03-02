@@ -246,7 +246,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             }
         }
     }
-    fn on_input_tick<'a>(
+    fn on_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
@@ -254,10 +254,11 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             return Some(e.into());
         }
 
+        let gs = &mut self.groups_output;
         loop {
-            match self.groups_output.current()? {
-                WhipTask::TYPE => match self.whip_group.on_input_tick(now) {
-                    Some(res) => {
+            match gs.current()? {
+                WhipTask::TYPE => {
+                    if let Some(res) = gs.process(self.whip_group.on_tick(now)) {
                         if matches!(res.1, TaskOutput::Destroy) {
                             self.shared_udp.remove_task(TaskId::Whip(
                                 res.0.task_index().expect("Should have task"),
@@ -265,29 +266,23 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                         }
                         return Some(res.into());
                     }
-                    None => {
-                        self.groups_output.finish_current();
-                    }
-                },
-                WhepTask::TYPE => match self.whep_group.on_input_tick(now) {
-                    Some(res) => {
+                }
+                WhepTask::TYPE => {
+                    if let Some(res) = gs.process(self.whep_group.on_tick(now)) {
                         if matches!(res.1, TaskOutput::Destroy) {
-                            self.shared_udp.remove_task(TaskId::Whep(
+                            self.shared_udp.remove_task(TaskId::Whip(
                                 res.0.task_index().expect("Should have task"),
                             ));
                         }
                         return Some(res.into());
                     }
-                    None => {
-                        self.groups_output.finish_current();
-                    }
-                },
+                }
                 _ => panic!("Unknown task type"),
             }
         }
     }
 
-    fn on_input_event<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, SfuEvent>,
@@ -306,7 +301,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                         Some(TaskId::Whip(index)) => {
                             self.last_input = Some(WhipTask::TYPE);
                             let owner = Owner::task(self.worker, WhipTask::TYPE, index);
-                            let TaskGroupOutput(owner, output) = self.whip_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whip_group.on_event(
                                 now,
                                 TaskGroupInput(
                                     owner,
@@ -318,7 +313,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                         Some(TaskId::Whep(index)) => {
                             self.last_input = Some(WhepTask::TYPE);
                             let owner = Owner::task(self.worker, WhepTask::TYPE, index);
-                            let TaskGroupOutput(owner, output) = self.whep_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whep_group.on_event(
                                 now,
                                 TaskGroupInput(
                                     owner,
@@ -337,14 +332,14 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                     self.last_input = owner.group_id();
                     match owner.group_id() {
                         Some(WhipTask::TYPE) => {
-                            let TaskGroupOutput(owner, output) = self.whip_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whip_group.on_event(
                                 now,
                                 TaskGroupInput(owner, TaskInput::Bus(channel, event)),
                             )?;
                             Some(WorkerInnerOutput::Task(owner, output))
                         }
                         Some(WhepTask::TYPE) => {
-                            let TaskGroupOutput(owner, output) = self.whep_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whep_group.on_event(
                                 now,
                                 TaskGroupInput(owner, TaskInput::Bus(channel, event)),
                             )?;
@@ -361,13 +356,13 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
         }
     }
 
-    fn pop_last_input<'a>(
+    fn pop_output<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
         match self.last_input? {
-            WhipTask::TYPE => self.whip_group.pop_last_input(now).map(|o| o.into()),
-            WhepTask::TYPE => self.whep_group.pop_last_input(now).map(|o| o.into()),
+            WhipTask::TYPE => self.whip_group.pop_output(now).map(|o| o.into()),
+            WhepTask::TYPE => self.whep_group.pop_output(now).map(|o| o.into()),
             _ => None,
         }
     }

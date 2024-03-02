@@ -72,10 +72,7 @@ impl<
     /// The idea of this function is external will call it utils it returns None.
     /// If a task has output, we will return the output and save flag next_tick_index for next call.
     /// In the end of list, we will clear next_tick_index
-    pub fn on_input_tick<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+    pub fn on_tick<'a>(&mut self, now: Instant) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
         self.clear_destroyed_task();
 
         let mut index = self.next_tick_index.unwrap_or(0);
@@ -108,7 +105,7 @@ impl<
 
     /// This function send an event to a task and return the output if the task has output.
     /// If the task has output, we will return the output and save flag last_input_index for next pop_last_input call.
-    pub fn on_input_event<'a>(
+    pub fn on_event<'a>(
         &mut self,
         now: Instant,
         input: TaskGroupInput<'a, ChannelId, Event>,
@@ -132,7 +129,7 @@ impl<
     /// In SAN/IO we usually have some output when we receive an input event.
     /// External will call this function util it return None.
     /// We use last_input_index which is saved in previous on_input_event or on_input_tick and clear it after we got None.
-    pub fn pop_last_input<'a>(
+    pub fn pop_output<'a>(
         &mut self,
         now: Instant,
     ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {

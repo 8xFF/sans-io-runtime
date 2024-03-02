@@ -186,34 +186,28 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         }
     }
 
-    fn on_input_tick<'a>(
+    fn on_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         loop {
             match self.group_state.current()? {
-                0 => match self.echo_type1.on_input_tick(now) {
-                    Some(e) => {
+                0 => {
+                    if let Some(e) = self.group_state.process(self.echo_type1.on_tick(now)) {
                         return Some(e.into());
                     }
-                    None => {
-                        self.group_state.finish_current();
-                    }
-                },
-                1 => match self.echo_type2.on_input_tick(now) {
-                    Some(e) => {
+                }
+                1 => {
+                    if let Some(e) = self.group_state.process(self.echo_type2.on_tick(now)) {
                         return Some(e.into());
                     }
-                    None => {
-                        self.group_state.finish_current();
-                    }
-                },
+                }
                 _ => unreachable!(),
             }
         }
     }
 
-    fn on_input_event<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, TestExtIn, TestChannel, TestEvent>,
@@ -221,18 +215,18 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         match event {
             WorkerInnerInput::Task(owner, event) => match owner.group_id() {
                 Some(0) => {
-                    let TaskGroupOutput(owner, output) = self
+                    let res = self
                         .echo_type1
-                        .on_input_event(now, TaskGroupInput(owner, event.convert_into()?))?;
+                        .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
                     self.last_input_index = Some(1);
-                    Some(WorkerInnerOutput::Task(owner, output.convert_into()))
+                    Some(res.into())
                 }
                 Some(1) => {
-                    let TaskGroupOutput(owner, output) = self
+                    let res = self
                         .echo_type2
-                        .on_input_event(now, TaskGroupInput(owner, event.convert_into()?))?;
+                        .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
                     self.last_input_index = Some(2);
-                    Some(WorkerInnerOutput::Task(owner, output.convert_into()))
+                    Some(res.into())
                 }
                 _ => unreachable!(),
             },
@@ -240,13 +234,13 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         }
     }
 
-    fn pop_last_input<'a>(
+    fn pop_output<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         match self.last_input_index? {
-            0 => self.echo_type1.pop_last_input(now).map(|a| a.into()),
-            1 => self.echo_type2.pop_last_input(now).map(|a| a.into()),
+            0 => self.echo_type1.pop_output(now).map(|a| a.into()),
+            1 => self.echo_type2.pop_output(now).map(|a| a.into()),
             _ => unreachable!(),
         }
     }
