@@ -51,7 +51,7 @@ impl<ChannelId: Debug + Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<Channe
 
     /// get all subscribers of a channel
     pub fn get_subscribers(&self, channel: ChannelId) -> Option<Vec<Owner>> {
-        self.channels.get(&channel).map(|x: &Vec<Owner>| x.clone())
+        self.channels.get(&channel).cloned()
     }
 
     /// remove owner from all channels

@@ -2,9 +2,10 @@ use std::{fmt::Debug, hash::Hash};
 
 use crate::{
     backend::Backend,
-    bus::{BusEventSource, BusSendMultiFeature, BusSendSingleFeature, BusSystemBuilder, BusWorker},
+    bus::{BusEventSource, BusSendSingleFeature, BusSystemBuilder, BusWorker},
     collections::DynamicDeque,
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
+    ErrorDebugger, Owner,
 };
 
 const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;
@@ -17,29 +18,23 @@ struct WorkerContainer {
 pub struct Controller<
     ExtIn: Clone,
     ExtOut: Clone,
-    SCfg: Clone,
+    SCfg,
     ChannelId,
     Event,
     const INNER_BUS_STACK: usize,
 > {
     worker_inner_bus: BusSystemBuilder<ChannelId, Event, INNER_BUS_STACK>,
     worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
-    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut>, 16>,
-    worker_event: BusWorker<u16, WorkerControlOut<ExtOut>, 16>,
+    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+    worker_event: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
     worker_threads: Vec<WorkerContainer>,
     output: DynamicDeque<ExtOut, 16>,
 }
 
-impl<
-        ExtIn: 'static + Send + Sync + Clone,
-        ExtOut: 'static + Send + Sync + Clone,
-        SCfg: 'static + Send + Sync + Clone,
-        ChannelId: 'static + Debug + Clone + Copy + Hash + PartialEq + Eq + Send + Sync,
-        Event: 'static + Send + Sync + Clone,
-        const INNER_BUS_STACK: usize,
-    > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event, INNER_BUS_STACK>
+impl<ExtIn: Clone, ExtOut: Clone, SCfg, ChannelId, Event, const INNER_BUS_STACK: usize> Default
+    for Controller<ExtIn, ExtOut, SCfg, ChannelId, Event, INNER_BUS_STACK>
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         let worker_control_bus = BusSystemBuilder::default();
         let mut worker_event_bus = BusSystemBuilder::default();
         let worker_event = worker_event_bus.new_worker();
@@ -50,10 +45,20 @@ impl<
             worker_event_bus,
             worker_event,
             worker_threads: Vec::new(),
-            output: DynamicDeque::new(),
+            output: DynamicDeque::default(),
         }
     }
+}
 
+impl<
+        ExtIn: 'static + Send + Sync + Clone,
+        ExtOut: 'static + Send + Sync + Clone,
+        SCfg: 'static + Send + Sync,
+        ChannelId: 'static + Debug + Clone + Copy + Hash + PartialEq + Eq + Send + Sync,
+        Event: 'static + Send + Sync + Clone,
+        const INNER_BUS_STACK: usize,
+    > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event, INNER_BUS_STACK>
+{
     pub fn add_worker<
         ICfg: 'static + Send + Sync,
         Inner: WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
@@ -90,19 +95,25 @@ impl<
     }
 
     pub fn process(&mut self) {
-        self.worker_control_bus
-            .broadcast(true, WorkerControlIn::StatsRequest);
+        for i in 0..self.worker_threads.len() {
+            self.worker_control_bus
+                .send(i, false, WorkerControlIn::StatsRequest)
+                .print_err("Query worker stats full");
+        }
         while let Some((source, event)) = self.worker_event.recv() {
             match (source, event) {
                 (BusEventSource::Direct(source_leg), event) => match event {
                     WorkerControlOut::Stats(stats) => {
-                        log::debug!("Worker stats: {:?}", stats);
+                        log::trace!("Worker {source_leg} stats: {:?}", stats);
                         // source_leg is 1-based because of 0 is for controller
                         // TODO avoid -1, should not hack this way
                         self.worker_threads[source_leg - 1].stats = stats;
                     }
                     WorkerControlOut::Ext(event) => {
                         self.output.push_back_safe(event);
+                    }
+                    WorkerControlOut::Spawn(cfg) => {
+                        self.spawn(cfg);
                     }
                 },
                 _ => {
@@ -127,6 +138,16 @@ impl<
             .send(best_worker, true, WorkerControlIn::Spawn(cfg))
         {
             log::error!("Failed to spawn task: {:?}", e);
+        }
+    }
+
+    pub fn send_to(&mut self, owner: Owner, ext: ExtIn) {
+        if let Err(e) = self.worker_control_bus.send(
+            owner.worker_id() as usize,
+            true,
+            WorkerControlIn::Ext(ext),
+        ) {
+            log::error!("Failed to send to task: {:?}", e);
         }
     }
 

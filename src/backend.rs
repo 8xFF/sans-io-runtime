@@ -32,6 +32,6 @@ pub trait Backend: Default + BackendOwner {
 }
 
 pub trait BackendOwner {
-    fn on_action<'a>(&mut self, owner: Owner, action: NetOutgoing<'a>);
+    fn on_action(&mut self, owner: Owner, action: NetOutgoing);
     fn remove_owner(&mut self, owner: Owner);
 }

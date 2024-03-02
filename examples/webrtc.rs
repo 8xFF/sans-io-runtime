@@ -12,7 +12,7 @@ fn main() {
     env_logger::init();
 
     let mut server = http::SimpleHttpServer::new(8080);
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, SfuEvent, 128>::new();
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, SfuEvent, 128>::default();
     controller.add_worker::<_, SfuWorker, MioBackend<128, 512>>(
         ICfg {
             udp_addr: "192.168.1.39:0".parse().unwrap(),

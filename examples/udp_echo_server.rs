@@ -50,14 +50,19 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     fn on_input_tick<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        None
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+        match self.output.pop_front()? {
+            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
+                Owner::worker(self.worker),
+                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
+            )),
+        }
     }
     fn on_input_event<'a>(
         &mut self,
         _now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Task(
                 _owner,
@@ -88,27 +93,14 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     fn pop_last_input<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         None
-    }
-
-    fn pop_output<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event>> {
-        let out = self.output.pop_front()?;
-        match out {
-            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
-                Owner::worker(self.worker),
-                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
-            )),
-        }
     }
 }
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::new();
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::default();
     controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
         EchoWorkerCfg {
             bind: SocketAddr::from(([127, 0, 0, 1], 10001)),

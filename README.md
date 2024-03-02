@@ -57,3 +57,47 @@ Controller will spawn some threads and each thread will run a worker. The worker
 ## Design
 
 ![Design](./docs/design.excalidraw.png)
+
+### Single task
+
+Bellow is state diagram of a single task.
+
+```mermaid
+stateDiagram
+    [*] --> Created
+    Created --> Waiting : attach to worker
+    Waiting --> OnTick : timer fired
+    OnTick --> Waiting : no output
+    OnTick --> PopOutput : has output
+    PopOutput --> PopOutput : has output
+    PopOutput --> Waiting : no output
+    Waiting --> OnInput : I/O, Bus
+    OnInput --> Waiting : no output
+    OnInput --> PopOutput : has output
+```
+
+The idea is in SAN/IO style, each task will reduce memory by create output immediately after input. We need to pop the output before we can receive the next input.
+
+### Multi tasks
+
+With idea of SAN/IO is we need to pop the output before we can receive the next input. This is a problem when we have multiple tasks. We need to have a way to control the order of the tasks.
+
+```mermaid
+stateDiagram
+    [*] --> Created
+    Created --> Waiting : attach groups to worker
+    Waiting --> OnTick : timer fired
+    OnTick --> OnTickSingleTask : next task
+    OnTick --> Waiting : no task
+    OnTickSingleTask --> OnTick : no output
+    OnTickSingleTask --> PopCurrentTickTaskOutput : has output
+    PopCurrentTickTaskOutput --> PopCurrentTickTaskOutput : has output
+    PopCurrentTickTaskOutput --> OnTick : no output
+
+    Waiting --> OnInput : I/O, Bus
+    OnInput --> OnInputSingleTask : has task
+    OnInputSingleTask --> Waiting : no output
+    OnInputSingleTask --> PopCurrentInputTaskOutput : has output
+    PopCurrentInputTaskOutput --> PopCurrentInputTaskOutput : has output
+    PopCurrentInputTaskOutput --> Waiting : no output
+```

@@ -70,11 +70,42 @@ pub enum TaskInput<'a, ChannelId, Event> {
     Bus(ChannelId, Event),
 }
 
+impl<'a, ChannelId, Event> TaskInput<'a, ChannelId, Event> {
+    pub fn convert_into<IChannelId: TryFrom<ChannelId>, IEvent: TryFrom<Event>>(
+        self,
+    ) -> Option<TaskInput<'a, IChannelId, IEvent>> {
+        match self {
+            TaskInput::Net(net) => Some(TaskInput::Net(net)),
+            TaskInput::Bus(channel, event) => Some(TaskInput::Bus(
+                channel.try_into().ok()?,
+                event.try_into().ok()?,
+            )),
+        }
+    }
+}
+
 /// Represents an output event for a task.
 pub enum TaskOutput<'a, ChannelId, Event> {
     Net(NetOutgoing<'a>),
     Bus(BusEvent<ChannelId, Event>),
     Destroy,
+}
+
+impl<'a, ChannelId, Event> TaskOutput<'a, ChannelId, Event> {
+    pub fn convert_into<NChannelId: From<ChannelId>, NEvent: From<Event>>(
+        self,
+    ) -> TaskOutput<'a, NChannelId, NEvent> {
+        match self {
+            TaskOutput::Net(net) => TaskOutput::Net(match net {
+                NetOutgoing::UdpListen(addr) => NetOutgoing::UdpListen(addr),
+                NetOutgoing::UdpPacket { from, to, data } => {
+                    NetOutgoing::UdpPacket { from, to, data }
+                }
+            }),
+            TaskOutput::Bus(event) => TaskOutput::Bus(event.convert_into()),
+            TaskOutput::Destroy => TaskOutput::Destroy,
+        }
+    }
 }
 
 /// Represents a task.
