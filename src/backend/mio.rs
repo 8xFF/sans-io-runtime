@@ -29,6 +29,7 @@
 //!         BackendIncoming::UdpListenResult { bind, result } => {
 //!             // Handle UDP listen result
 //!         }
+//!         _ => { }
 //!     }
 //! }
 //!
@@ -74,7 +75,7 @@ fn addr_seed_to_token(addr: SocketAddr, seed: u16) -> Token {
 }
 
 fn reserve_seed_addr_from_token(token: Token) -> (u16, Token) {
-    let port: u16 = 0 | (token.0 as u16);
+    let port: u16 = token.0 as u16;
     let seed = ((token.0) >> 16) as u16;
     (seed, Token(port as usize))
 }
@@ -200,7 +201,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                             listener.seed,
                             TcpStreamContainer {
                                 stream: conn,
-                                addr: addr,
+                                addr,
                                 owner: listener.owner,
                             },
                         );
@@ -225,7 +226,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                                     if n == 0 {
                                         self.output.push_back_safe(InQueue::TcpOnDisconnected {
                                             owner: conn.owner,
-                                            listener_token: listener_token,
+                                            listener_token,
                                             seed,
                                         });
                                     } else {
