@@ -112,11 +112,6 @@ enum InQueue<Owner> {
         bind: SocketAddr,
         result: Result<SocketAddr, std::io::Error>,
     },
-    TcpOnConnected {
-        owner: Owner,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
-    },
     TcpOnDisconnected {
         owner: Owner,
         listener_token: Token,
@@ -152,19 +147,6 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                     result,
                 } => {
                     return Some((BackendIncoming::TcpListenResult { bind, result }, owner));
-                }
-                InQueue::TcpOnConnected {
-                    owner,
-                    local_addr,
-                    remote_addr,
-                } => {
-                    return Some((
-                        BackendIncoming::TcpOnConnected {
-                            local_addr: local_addr,
-                            remote_addr: remote_addr,
-                        },
-                        owner,
-                    ))
                 }
                 InQueue::TcpOnDisconnected {
                     owner,
@@ -223,12 +205,14 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                             },
                         );
                         listener.conn_addrs.insert(addr, listener.seed);
-                        self.output.push_back_safe(InQueue::TcpOnConnected {
-                            owner: listener.owner,
-                            local_addr: listener.local_addr,
-                            remote_addr: addr,
-                        });
                         listener.seed += 1;
+                        return Some((
+                            BackendIncoming::TcpOnConnected {
+                                local_addr: listener.local_addr,
+                                remote_addr: addr,
+                            },
+                            listener.owner,
+                        ));
                     } else {
                         self.event_buffer2.pop_front();
                     }
@@ -460,7 +444,9 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, time::Duration};
+    use std::{io::Write, net::SocketAddr, time::Duration};
+
+    use mio::net::TcpStream;
 
     use crate::{
         backend::{Backend, BackendIncoming, BackendOwner},
@@ -531,5 +517,94 @@ mod tests {
 
         backend.remove_owner(Owner::worker(2));
         assert_eq!(backend.udp_sockets.len(), 0);
+    }
+
+    #[allow(unused_assignments)]
+    #[test]
+    fn test_on_action_tcp_listener_success() {
+        let mut backend = MioBackend::<2, 2>::default();
+        let server_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let mut buf = [0; 1500];
+
+        backend.on_action(
+            Owner::worker(1),
+            NetOutgoing::TcpListen(SocketAddr::from(([127, 0, 0, 1], 8080))),
+        );
+
+        match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+            Some((BackendIncoming::TcpListenResult { bind, .. }, owner)) => {
+                assert_eq!(owner, Owner::worker(1));
+                assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 8080)));
+            }
+            _ => panic!("Expected TcpListenerResult"),
+        }
+
+        let client = TcpStream::connect(server_addr);
+        match client {
+            Ok(mut stream) => {
+                let mut cli_addr = None;
+                match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+                    Some((
+                        BackendIncoming::TcpOnConnected {
+                            local_addr,
+                            remote_addr,
+                        },
+                        owner,
+                    )) => {
+                        assert_eq!(owner, Owner::worker(1));
+                        assert_eq!(local_addr, SocketAddr::from(([127, 0, 0, 1], 8080)));
+                        cli_addr = Some(remote_addr);
+                    }
+                    _ => panic!("Expected TcpOnConnected"),
+                };
+
+                let _ = stream.write(b"hello").unwrap();
+                let mut tick = 0;
+
+                loop {
+                    match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+                        Some((BackendIncoming::TcpPacket { from, to, len }, owner)) => {
+                            assert_eq!(owner, Owner::worker(1));
+                            assert_eq!(from, cli_addr.expect(""));
+                            assert_eq!(to, server_addr);
+                            assert_eq!(&buf[0..len], b"hello");
+                            break;
+                        }
+                        _ => {
+                            tick += 1;
+                            if tick > 30 {
+                                panic!("timeout to wait tcp packet");
+                            }
+                        }
+                    }
+                }
+
+                tick = 0;
+                drop(stream);
+                loop {
+                    match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+                        Some((
+                            BackendIncoming::TcpOnDisconnected {
+                                local_addr,
+                                remote_addr,
+                            },
+                            owner,
+                        )) => {
+                            assert_eq!(owner, Owner::worker(1));
+                            assert_eq!(local_addr, SocketAddr::from(([127, 0, 0, 1], 8080)));
+                            assert_eq!(remote_addr, cli_addr.expect(""));
+                            break;
+                        }
+                        _ => {
+                            tick += 1;
+                            if tick > 30 {
+                                panic!("timeout to wait tcp connection close event");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => panic!("connection error"),
+        }
     }
 }
