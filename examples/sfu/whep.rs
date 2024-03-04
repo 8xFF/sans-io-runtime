@@ -200,6 +200,18 @@ impl Task<ChannelId, SfuEvent> for WhepTask {
                 NetIncoming::UdpListenResult { .. } => {
                     panic!("Unexpected UdpListenResult");
                 }
+                NetIncoming::TcpListenResult { .. } => {
+                    panic!("Unexpected TcpListeneResult");
+                }
+                NetIncoming::TcpPacket { .. } => {
+                    panic!("Unexpected TcpPacket");
+                }
+                NetIncoming::TcpOnConnected { .. } => {
+                    panic!("Unexpected TcpOnConnected");
+                }
+                NetIncoming::TcpOnDisconnected { .. } => {
+                    panic!("Unexpected TcpOnDisconnected");
+                }
             },
             TaskInput::Bus(channel, event) => match event {
                 SfuEvent::RequestKeyFrame(_kind) => {
