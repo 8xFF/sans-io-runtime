@@ -72,7 +72,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
             WorkerInnerInput::Task(
                 _owner,
                 TaskInput::Net(NetIncoming::TcpOnConnected {
-                    local_addr,
+                    local_addr: _,
                     remote_addr,
                 }),
             ) => {
@@ -82,7 +82,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
             WorkerInnerInput::Task(
                 _owner,
                 TaskInput::Net(NetIncoming::TcpOnDisconnected {
-                    local_addr,
+                    local_addr: _,
                     remote_addr,
                 }),
             ) => {

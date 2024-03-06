@@ -46,7 +46,7 @@
 //! Note: This module assumes that the sans-io-runtime crate and the Mio library are already imported and available.
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::SocketAddr,
     time::Duration,
     usize,
@@ -54,7 +54,7 @@ use std::{
 
 use mio::{
     net::{TcpListener, TcpStream, UdpSocket},
-    Events, Interest, Poll, Token,
+    Events, Interest, Poll, Registry, Token,
 };
 
 use crate::{
@@ -80,19 +80,98 @@ fn reserve_seed_addr_from_token(token: Token) -> (u16, Token) {
     (seed, Token(port as usize))
 }
 
-struct TcpStreamContainer<Owner> {
+struct TcpStreamContainer {
     stream: TcpStream,
     addr: SocketAddr,
-    owner: Owner,
 }
 
 struct TcpListenerContainer<Owner> {
     listener: TcpListener,
     local_addr: SocketAddr,
     owner: Owner,
-    conns: HashMap<u16, TcpStreamContainer<Owner>>,
+    conns: HashMap<u16, TcpStreamContainer>,
     conn_addrs: HashMap<SocketAddr, u16>,
     seed: u16,
+}
+
+impl TcpListenerContainer<Owner> {
+    pub fn new_connection(&mut self, registry: &Registry) -> Option<SocketAddr> {
+        match self.listener.accept() {
+            Ok((mut stream, addr)) => {
+                let token = addr_seed_to_token(self.local_addr, self.seed);
+                if let Err(e) = registry.register(
+                    &mut stream,
+                    token,
+                    Interest::READABLE.add(Interest::WRITABLE),
+                ) {
+                    log::error!("Mio register error {:?}", e);
+                    return None;
+                }
+
+                self.conns
+                    .insert(self.seed, TcpStreamContainer { stream, addr });
+                self.conn_addrs.insert(addr, self.seed);
+                self.next_seed();
+
+                return Some(addr);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
+            Err(e) => {
+                log::error!("error when accept connection {:?}", e);
+                None
+            }
+        }
+    }
+
+    pub fn recv(
+        &mut self,
+        seed: u16,
+        buf: &mut [u8],
+        registry: &Registry,
+    ) -> Option<BackendIncoming> {
+        let mut closed_addr = None;
+        if let Some(conn) = self.conns.get_mut(&seed) {
+            if let Ok(n) = conn.stream.read(buf) {
+                if n == 0 {
+                    closed_addr = Some(conn.addr);
+                } else {
+                    return Some(BackendIncoming::TcpPacket {
+                        from: conn.addr,
+                        to: self.local_addr,
+                        len: n,
+                    });
+                }
+            }
+        }
+
+        if let Some(addr) = closed_addr {
+            if let Some(seed) = self.conn_addrs.remove(&addr) {
+                if let Some(mut conn) = self.conns.remove(&seed) {
+                    let _ = registry.deregister(&mut conn.stream);
+                }
+            }
+            return Some(BackendIncoming::TcpOnDisconnected {
+                local_addr: self.local_addr,
+                remote_addr: addr,
+            });
+        }
+
+        None
+    }
+
+    pub fn send_to(&mut self, addr: SocketAddr, data: &[u8]) {
+        if let Some(seed) = self.conn_addrs.get(&addr) {
+            if let Some(conn) = self.conns.get_mut(seed) {
+                if let Err(err) = conn.stream.write(data) {
+                    log::error!("MioBackend TcpListener error when send tcp data {:?}", err);
+                }
+            }
+        }
+    }
+
+    fn next_seed(&mut self) {
+        self.seed += 1;
+    }
 }
 
 struct UdpContainer<Owner> {
@@ -112,11 +191,6 @@ enum InQueue<Owner> {
         owner: Owner,
         bind: SocketAddr,
         result: Result<SocketAddr, std::io::Error>,
-    },
-    TcpOnDisconnected {
-        owner: Owner,
-        listener_token: Token,
-        seed: u16,
     },
 }
 
@@ -149,25 +223,6 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                 } => {
                     return Some((BackendIncoming::TcpListenResult { bind, result }, owner));
                 }
-                InQueue::TcpOnDisconnected {
-                    owner,
-                    listener_token,
-                    seed,
-                } => {
-                    if let Some(listener) = self.tcp_listeners.get_mut(&listener_token) {
-                        if let Some(mut conn) = listener.conns.remove(&seed) {
-                            let _ = self.poll.registry().deregister(&mut conn.stream);
-                            listener.conn_addrs.remove(&conn.addr);
-                            return Some((
-                                BackendIncoming::TcpOnDisconnected {
-                                    local_addr: listener.local_addr,
-                                    remote_addr: conn.addr,
-                                },
-                                owner,
-                            ));
-                        }
-                    }
-                }
             }
         }
         while !self.event_buffer2.is_empty() {
@@ -186,27 +241,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                         self.event_buffer2.pop_front();
                     }
                 } else if let Some(listener) = self.tcp_listeners.get_mut(token) {
-                    if let Ok((mut conn, addr)) = listener.listener.accept() {
-                        let token = addr_seed_to_token(listener.local_addr, listener.seed);
-                        if let Err(e) = self.poll.registry().register(
-                            &mut conn,
-                            token,
-                            Interest::READABLE.add(Interest::WRITABLE),
-                        ) {
-                            log::error!("Mio register error {:?}", e);
-                            return None;
-                        }
-
-                        listener.conns.insert(
-                            listener.seed,
-                            TcpStreamContainer {
-                                stream: conn,
-                                addr,
-                                owner: listener.owner,
-                            },
-                        );
-                        listener.conn_addrs.insert(addr, listener.seed);
-                        listener.seed += 1;
+                    if let Some(addr) = listener.new_connection(self.poll.registry()) {
                         return Some((
                             BackendIncoming::TcpOnConnected {
                                 local_addr: listener.local_addr,
@@ -221,25 +256,8 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                     let (seed, listener_token) = reserve_seed_addr_from_token(*token);
                     if seed > 0 {
                         if let Some(listener) = self.tcp_listeners.get_mut(&listener_token) {
-                            if let Some(conn) = listener.conns.get_mut(&seed) {
-                                if let Ok(n) = conn.stream.read(buf) {
-                                    if n == 0 {
-                                        self.output.push_back_safe(InQueue::TcpOnDisconnected {
-                                            owner: conn.owner,
-                                            listener_token,
-                                            seed,
-                                        });
-                                    } else {
-                                        return Some((
-                                            BackendIncoming::TcpPacket {
-                                                from: conn.addr,
-                                                to: listener.local_addr,
-                                                len: n,
-                                            },
-                                            conn.owner,
-                                        ));
-                                    }
-                                }
+                            if let Some(result) = listener.recv(seed, buf, self.poll.registry()) {
+                                return Some((result, listener.owner));
                             }
                         }
                     }
@@ -408,19 +426,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
             NetOutgoing::TcpPacket { from, to, data } => {
                 let token = addr_to_token(from);
                 if let Some(listener) = self.tcp_listeners.get_mut(&token) {
-                    if let Some(seed) = listener.conn_addrs.get(&to) {
-                        if let Some(conn) = listener.conns.get_mut(seed) {
-                            if let Err(e) = conn.stream.write(&data) {
-                                log::error!("Mio send_to error {:?}", e);
-                            }
-                        } else {
-                            log::error!("Mio not found connection for seed {}", seed);
-                        }
-                    } else {
-                        log::error!("Mio not found connection for addr {}", to);
-                    }
-                } else {
-                    log::error!("Mio not found connection for addr {}", to);
+                    listener.send_to(to, &data);
                 }
             }
         }
