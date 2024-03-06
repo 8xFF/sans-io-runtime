@@ -23,6 +23,23 @@ pub enum NetIncoming<'a> {
         to: SocketAddr,
         data: &'a [u8],
     },
+    TcpListenResult {
+        bind: SocketAddr,
+        result: Result<SocketAddr, std::io::Error>,
+    },
+    TcpPacket {
+        from: SocketAddr,
+        to: SocketAddr,
+        data: &'a [u8],
+    },
+    TcpOnConnected {
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    },
+    TcpOnDisconnected {
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    },
 }
 
 impl<'a> NetIncoming<'a> {
@@ -35,6 +52,27 @@ impl<'a> NetIncoming<'a> {
                 let data = &buf[..len];
                 Self::UdpPacket { from, to, data }
             }
+            BackendIncoming::TcpListenResult { bind, result } => {
+                Self::TcpListenResult { bind, result }
+            }
+            BackendIncoming::TcpPacket { from, to, len } => {
+                let data = &buf[..len];
+                Self::TcpPacket { from, to, data }
+            }
+            BackendIncoming::TcpOnConnected {
+                local_addr,
+                remote_addr,
+            } => Self::TcpOnConnected {
+                local_addr,
+                remote_addr,
+            },
+            BackendIncoming::TcpOnDisconnected {
+                local_addr,
+                remote_addr,
+            } => Self::TcpOnDisconnected {
+                local_addr,
+                remote_addr,
+            },
         }
     }
 }
@@ -58,6 +96,12 @@ impl<'a> Deref for Buffer<'a> {
 pub enum NetOutgoing<'a> {
     UdpListen(SocketAddr),
     UdpPacket {
+        from: SocketAddr,
+        to: SocketAddr,
+        data: Buffer<'a>,
+    },
+    TcpListen(SocketAddr),
+    TcpPacket {
         from: SocketAddr,
         to: SocketAddr,
         data: Buffer<'a>,
@@ -100,6 +144,10 @@ impl<'a, ChannelId, Event> TaskOutput<'a, ChannelId, Event> {
                 NetOutgoing::UdpListen(addr) => NetOutgoing::UdpListen(addr),
                 NetOutgoing::UdpPacket { from, to, data } => {
                     NetOutgoing::UdpPacket { from, to, data }
+                }
+                NetOutgoing::TcpListen(addr) => NetOutgoing::TcpListen(addr),
+                NetOutgoing::TcpPacket { from, to, data } => {
+                    NetOutgoing::TcpPacket { from, to, data }
                 }
             }),
             TaskOutput::Bus(event) => TaskOutput::Bus(event.convert_into()),

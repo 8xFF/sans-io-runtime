@@ -19,6 +19,23 @@ pub enum BackendIncoming {
         to: SocketAddr,
         len: usize,
     },
+    TcpListenResult {
+        bind: SocketAddr,
+        result: Result<SocketAddr, std::io::Error>,
+    },
+    TcpPacket {
+        from: SocketAddr,
+        to: SocketAddr,
+        len: usize,
+    },
+    TcpOnConnected {
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    },
+    TcpOnDisconnected {
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    },
 }
 
 pub trait Backend: Default + BackendOwner {

@@ -29,6 +29,7 @@
 //!         BackendIncoming::UdpListenResult { bind, result } => {
 //!             // Handle UDP listen result
 //!         }
+//!         _ => { }
 //!     }
 //! }
 //!
@@ -43,9 +44,18 @@
 //! ```
 //!
 //! Note: This module assumes that the sans-io-runtime crate and the Mio library are already imported and available.
-use std::{net::SocketAddr, time::Duration, usize};
+use std::{
+    collections::HashMap,
+    io::{self, Read, Write},
+    net::SocketAddr,
+    time::Duration,
+    usize,
+};
 
-use mio::{net::UdpSocket, Events, Interest, Poll, Token};
+use mio::{
+    net::{TcpListener, TcpStream, UdpSocket},
+    Events, Interest, Poll, Registry, Token,
+};
 
 use crate::{
     backend::BackendOwner, collections::DynamicDeque, owner::Owner, ErrorDebugger2, NetOutgoing,
@@ -57,6 +67,111 @@ const QUEUE_PKT_NUM: usize = 512;
 
 fn addr_to_token(addr: SocketAddr) -> Token {
     Token(addr.port() as usize)
+}
+
+fn addr_seed_to_token(addr: SocketAddr, seed: u16) -> Token {
+    let val = ((seed as usize) << 16) | (addr.port() as usize);
+    Token(val)
+}
+
+fn reserve_seed_addr_from_token(token: Token) -> (u16, Token) {
+    let port: u16 = token.0 as u16;
+    let seed = ((token.0) >> 16) as u16;
+    (seed, Token(port as usize))
+}
+
+struct TcpStreamContainer {
+    stream: TcpStream,
+    addr: SocketAddr,
+}
+
+struct TcpListenerContainer<Owner> {
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    owner: Owner,
+    conns: HashMap<u16, TcpStreamContainer>,
+    conn_addrs: HashMap<SocketAddr, u16>,
+    seed: u16,
+}
+
+impl TcpListenerContainer<Owner> {
+    pub fn new_connection(&mut self, registry: &Registry) -> Option<SocketAddr> {
+        match self.listener.accept() {
+            Ok((mut stream, addr)) => {
+                let token = addr_seed_to_token(self.local_addr, self.seed);
+                if let Err(e) = registry.register(
+                    &mut stream,
+                    token,
+                    Interest::READABLE.add(Interest::WRITABLE),
+                ) {
+                    log::error!("Mio register error {:?}", e);
+                    return None;
+                }
+
+                self.conns
+                    .insert(self.seed, TcpStreamContainer { stream, addr });
+                self.conn_addrs.insert(addr, self.seed);
+                self.next_seed();
+
+                Some(addr)
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
+            Err(e) => {
+                log::error!("error when accept connection {:?}", e);
+                None
+            }
+        }
+    }
+
+    pub fn recv(
+        &mut self,
+        seed: u16,
+        buf: &mut [u8],
+        registry: &Registry,
+    ) -> Option<BackendIncoming> {
+        let mut closed_addr = None;
+        if let Some(conn) = self.conns.get_mut(&seed) {
+            if let Ok(n) = conn.stream.read(buf) {
+                if n == 0 {
+                    closed_addr = Some(conn.addr);
+                } else {
+                    return Some(BackendIncoming::TcpPacket {
+                        from: conn.addr,
+                        to: self.local_addr,
+                        len: n,
+                    });
+                }
+            }
+        }
+
+        if let Some(addr) = closed_addr {
+            if let Some(seed) = self.conn_addrs.remove(&addr) {
+                if let Some(mut conn) = self.conns.remove(&seed) {
+                    let _ = registry.deregister(&mut conn.stream);
+                }
+            }
+            return Some(BackendIncoming::TcpOnDisconnected {
+                local_addr: self.local_addr,
+                remote_addr: addr,
+            });
+        }
+
+        None
+    }
+
+    pub fn send_to(&mut self, addr: SocketAddr, data: &[u8]) {
+        if let Some(seed) = self.conn_addrs.get(&addr) {
+            if let Some(conn) = self.conns.get_mut(seed) {
+                if let Err(err) = conn.stream.write(data) {
+                    log::error!("MioBackend TcpListener error when send tcp data {:?}", err);
+                }
+            }
+        }
+    }
+
+    fn next_seed(&mut self) {
+        self.seed += 1;
+    }
 }
 
 struct UdpContainer<Owner> {
@@ -72,6 +187,11 @@ enum InQueue<Owner> {
         bind: SocketAddr,
         result: Result<SocketAddr, std::io::Error>,
     },
+    TcpListenerResult {
+        owner: Owner,
+        bind: SocketAddr,
+        result: Result<SocketAddr, std::io::Error>,
+    },
 }
 
 pub struct MioBackend<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> {
@@ -79,6 +199,7 @@ pub struct MioBackend<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> 
     event_buffer: Events,
     event_buffer2: heapless::Deque<Token, QUEUE_PKT_NUM>,
     udp_sockets: heapless::FnvIndexMap<Token, UdpContainer<Owner>, SOCKET_LIMIT>,
+    tcp_listeners: heapless::FnvIndexMap<Token, TcpListenerContainer<Owner>, SOCKET_LIMIT>,
     output: DynamicDeque<InQueue<Owner>, STACK_QUEUE_SIZE>,
 }
 
@@ -94,6 +215,13 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                     result,
                 } => {
                     return Some((BackendIncoming::UdpListenResult { bind, result }, owner));
+                }
+                InQueue::TcpListenerResult {
+                    owner,
+                    bind,
+                    result,
+                } => {
+                    return Some((BackendIncoming::TcpListenResult { bind, result }, owner));
                 }
             }
         }
@@ -112,7 +240,27 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
                     } else {
                         self.event_buffer2.pop_front();
                     }
+                } else if let Some(listener) = self.tcp_listeners.get_mut(token) {
+                    if let Some(addr) = listener.new_connection(self.poll.registry()) {
+                        return Some((
+                            BackendIncoming::TcpOnConnected {
+                                local_addr: listener.local_addr,
+                                remote_addr: addr,
+                            },
+                            listener.owner,
+                        ));
+                    } else {
+                        self.event_buffer2.pop_front();
+                    }
                 } else {
+                    let (seed, listener_token) = reserve_seed_addr_from_token(*token);
+                    if seed > 0 {
+                        if let Some(listener) = self.tcp_listeners.get_mut(&listener_token) {
+                            if let Some(result) = listener.recv(seed, buf, self.poll.registry()) {
+                                return Some((result, listener.owner));
+                            }
+                        }
+                    }
                     self.event_buffer2.pop_front();
                 }
             }
@@ -131,6 +279,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
             event_buffer2: heapless::Deque::new(),
             udp_sockets: heapless::FnvIndexMap::new(),
+            tcp_listeners: heapless::FnvIndexMap::new(),
             output: DynamicDeque::default(),
         }
     }
@@ -226,6 +375,60 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     log::error!("Mio send_to error: no socket for {:?}", from);
                 }
             }
+            NetOutgoing::TcpListen(addr) => {
+                assert!(
+                    !addr.ip().is_unspecified(),
+                    "should not bind to unspecified ip"
+                );
+                log::info!("MioBackend: TcpListen {:?}", addr);
+                match TcpListener::bind(addr) {
+                    Ok(mut listener) => {
+                        let local_addr =
+                            listener.local_addr().expect("should access udp local_addr");
+                        let token = addr_to_token(local_addr);
+                        if let Err(e) =
+                            self.poll
+                                .registry()
+                                .register(&mut listener, token, Interest::READABLE)
+                        {
+                            log::error!("Mio register error {:?}", e);
+                            return;
+                        }
+                        self.output.push_back_safe(InQueue::TcpListenerResult {
+                            owner,
+                            bind: addr,
+                            result: Ok(local_addr),
+                        });
+                        self.tcp_listeners
+                            .insert(
+                                token,
+                                TcpListenerContainer {
+                                    listener,
+                                    local_addr,
+                                    owner,
+                                    seed: 1,
+                                    conns: HashMap::new(),
+                                    conn_addrs: HashMap::new(),
+                                },
+                            )
+                            .print_err2("MioBackend tcp_listener full");
+                    }
+                    Err(e) => {
+                        log::error!("MioBackend: Tcp bind error {:?}", e);
+                        self.output.push_back_safe(InQueue::TcpListenerResult {
+                            owner,
+                            bind: addr,
+                            result: Err(e),
+                        })
+                    }
+                }
+            }
+            NetOutgoing::TcpPacket { from, to, data } => {
+                let token = addr_to_token(from);
+                if let Some(listener) = self.tcp_listeners.get_mut(&token) {
+                    listener.send_to(to, &data);
+                }
+            }
         }
     }
 
@@ -248,7 +451,9 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, time::Duration};
+    use std::{io::Write, net::SocketAddr, time::Duration};
+
+    use mio::net::TcpStream;
 
     use crate::{
         backend::{Backend, BackendIncoming, BackendOwner},
@@ -319,5 +524,94 @@ mod tests {
 
         backend.remove_owner(Owner::worker(2));
         assert_eq!(backend.udp_sockets.len(), 0);
+    }
+
+    #[allow(unused_assignments)]
+    #[test]
+    fn test_on_action_tcp_listener_success() {
+        let mut backend = MioBackend::<2, 2>::default();
+        let server_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let mut buf = [0; 1500];
+
+        backend.on_action(
+            Owner::worker(1),
+            NetOutgoing::TcpListen(SocketAddr::from(([127, 0, 0, 1], 8080))),
+        );
+
+        match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+            Some((BackendIncoming::TcpListenResult { bind, .. }, owner)) => {
+                assert_eq!(owner, Owner::worker(1));
+                assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 8080)));
+            }
+            _ => panic!("Expected TcpListenerResult"),
+        }
+
+        let client = TcpStream::connect(server_addr);
+        match client {
+            Ok(mut stream) => {
+                let mut cli_addr = None;
+                match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+                    Some((
+                        BackendIncoming::TcpOnConnected {
+                            local_addr,
+                            remote_addr,
+                        },
+                        owner,
+                    )) => {
+                        assert_eq!(owner, Owner::worker(1));
+                        assert_eq!(local_addr, SocketAddr::from(([127, 0, 0, 1], 8080)));
+                        cli_addr = Some(remote_addr);
+                    }
+                    _ => panic!("Expected TcpOnConnected"),
+                };
+
+                let _ = stream.write(b"hello").unwrap();
+                let mut tick = 0;
+
+                loop {
+                    match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+                        Some((BackendIncoming::TcpPacket { from, to, len }, owner)) => {
+                            assert_eq!(owner, Owner::worker(1));
+                            assert_eq!(from, cli_addr.expect(""));
+                            assert_eq!(to, server_addr);
+                            assert_eq!(&buf[0..len], b"hello");
+                            break;
+                        }
+                        _ => {
+                            tick += 1;
+                            if tick > 30 {
+                                panic!("timeout to wait tcp packet");
+                            }
+                        }
+                    }
+                }
+
+                tick = 0;
+                drop(stream);
+                loop {
+                    match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
+                        Some((
+                            BackendIncoming::TcpOnDisconnected {
+                                local_addr,
+                                remote_addr,
+                            },
+                            owner,
+                        )) => {
+                            assert_eq!(owner, Owner::worker(1));
+                            assert_eq!(local_addr, SocketAddr::from(([127, 0, 0, 1], 8080)));
+                            assert_eq!(remote_addr, cli_addr.expect(""));
+                            break;
+                        }
+                        _ => {
+                            tick += 1;
+                            if tick > 30 {
+                                panic!("timeout to wait tcp connection close event");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => panic!("connection error"),
+        }
     }
 }
