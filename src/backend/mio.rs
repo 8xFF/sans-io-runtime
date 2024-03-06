@@ -113,7 +113,7 @@ impl TcpListenerContainer<Owner> {
                 self.conn_addrs.insert(addr, self.seed);
                 self.next_seed();
 
-                return Some(addr);
+                Some(addr)
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
             Err(e) => {
