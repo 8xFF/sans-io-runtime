@@ -45,13 +45,13 @@ pub enum WorkerInnerInput<'a, ExtIn, ChannelId, Event> {
 }
 
 pub enum WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg> {
-    Task(Owner, TaskOutput<'a, ChannelId, Event>),
+    Task(Owner, TaskOutput<'a, ChannelId, ChannelId, Event>),
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
     Spawn(SCfg),
 }
 
-pub trait WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
+pub trait WorkerInner<ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
     fn build(worker: u16, cfg: ICfg) -> Self;
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
@@ -59,16 +59,16 @@ pub trait WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
     fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
     fn on_event<'a>(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>;
+        event: WorkerInnerInput<'a, ExtIn, ChannelIn, Event>,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
     fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
 }
 
 pub(crate) struct Worker<
@@ -214,6 +214,9 @@ impl<
 
         self.backend.finish_incoming_cycle();
         self.backend.finish_outgoing_cycle();
+        if now.elapsed().as_millis() > 15 {
+            log::warn!("Worker process too long: {}", now.elapsed().as_millis());
+        }
         log::debug!("Worker process done in {}", now.elapsed().as_nanos());
     }
 

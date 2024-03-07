@@ -33,7 +33,8 @@ struct EchoTask<const FAKE_TYPE: u16> {
     count: usize,
     cfg: EchoTaskCfg,
     local_addr: SocketAddr,
-    output: heapless::Deque<TaskOutput<'static, ChannelId, Event>, 16>,
+    local_backend_slot: usize,
+    output: heapless::Deque<TaskOutput<'static, ChannelId, ChannelId, Event>, 16>,
 }
 
 impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
@@ -41,41 +42,46 @@ impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
         log::info!("Create new echo client task in addr {}", cfg.dest);
         let mut output = heapless::Deque::new();
         output
-            .push_back(TaskOutput::Net(NetOutgoing::UdpListen(SocketAddr::from((
-                [127, 0, 0, 1],
-                0,
-            )))))
+            .push_back(TaskOutput::Net(NetOutgoing::UdpListen {
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                reuse: false,
+            }))
             .print_err2("should not hapended");
         Self {
             count: 0,
             cfg,
             local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            local_backend_slot: 0,
             output,
         }
     }
 }
 
-impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
+impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask<FAKE_TYPE> {
     const TYPE: u16 = FAKE_TYPE;
 
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<TaskOutput<'a, ChannelId, Event>> {
+    fn on_tick<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
         None
     }
 
-    fn on_input<'b>(
+    fn on_event<'b>(
         &mut self,
         _now: Instant,
         input: TaskInput<'b, ChannelId, Event>,
-    ) -> Option<TaskOutput<'b, ChannelId, Event>> {
+    ) -> Option<TaskOutput<'b, ChannelId, ChannelId, Event>> {
         match input {
             TaskInput::Net(NetIncoming::UdpListenResult { bind, result }) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
-                if let Ok(addr) = result {
+                if let Ok((addr, slot)) = result {
                     self.local_addr = addr;
+                    self.local_backend_slot = slot;
                     for _ in 0..self.cfg.brust_size {
                         self.output
                             .push_back(TaskOutput::Net(NetOutgoing::UdpPacket {
-                                from: self.local_addr,
+                                slot: self.local_backend_slot,
                                 to: self.cfg.dest,
                                 data: Buffer::Vec([0; 1000].to_vec()),
                             }))
@@ -84,14 +90,14 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
                 }
                 None
             }
-            TaskInput::Net(NetIncoming::UdpPacket { from, to, data }) => {
+            TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }) => {
                 self.count += 1;
                 if self.count >= self.cfg.count {
                     log::info!("EchoTask {} done", FAKE_TYPE);
                     Some(TaskOutput::Destroy)
                 } else {
                     Some(TaskOutput::Net(NetOutgoing::UdpPacket {
-                        from: to,
+                        slot,
                         to: from,
                         data: Buffer::Ref(data),
                     }))
@@ -101,15 +107,18 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, Event> for EchoTask<FAKE_TYPE> {
         }
     }
 
-    fn pop_output<'a>(&mut self, _now: Instant) -> Option<TaskOutput<'a, ChannelId, Event>> {
+    fn pop_output<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
         self.output.pop_front()
     }
 }
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<ChannelId, Event, EchoTask<0>, 16>,
-    echo_type2: TaskGroup<ChannelId, Event, EchoTask<1>, 16>,
+    echo_type1: TaskGroup<ChannelId, ChannelId, Event, Event, EchoTask<0>, 16>,
+    echo_type2: TaskGroup<ChannelId, ChannelId, Event, Event, EchoTask<1>, 16>,
     group_state: TaskGroupOutputsState<2>,
     last_input_index: Option<u16>,
 }

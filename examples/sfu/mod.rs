@@ -89,8 +89,8 @@ pub enum SCfg {
 pub struct SfuWorker {
     worker: u16,
     dtls_cert: DtlsCert,
-    whip_group: TaskGroup<ChannelId, SfuEvent, WhipTask, 128>,
-    whep_group: TaskGroup<ChannelId, SfuEvent, WhepTask, 128>,
+    whip_group: TaskGroup<ChannelId, ChannelId, SfuEvent, SfuEvent, WhipTask, 128>,
+    whep_group: TaskGroup<ChannelId, ChannelId, SfuEvent, SfuEvent, WhepTask, 128>,
     output: VecDeque<WorkerInnerOutput<'static, ExtOut, ChannelId, SfuEvent, SCfg>>,
     shared_udp: SharedUdpPort<TaskId>,
     last_input: Option<u16>,
@@ -127,7 +127,8 @@ impl SfuWorker {
         log::info!("Whip endpoint connect request: {}", http_auth);
         let channel = Self::channel_build(&http_auth);
         let task = WhipTask::build(
-            self.shared_udp.get_addr().expect(""),
+            self.shared_udp.get_backend_slot().expect(""),
+            self.shared_udp.get_backend_addr().expect(""),
             self.dtls_cert.clone(),
             channel,
             &String::from_utf8_lossy(&req.body),
@@ -174,7 +175,8 @@ impl SfuWorker {
         log::info!("Whep endpoint connect request: {}", http_auth);
         let channel = Self::channel_build(&http_auth);
         let task = WhepTask::build(
-            self.shared_udp.get_addr().expect(""),
+            self.shared_udp.get_backend_slot().expect(""),
+            self.shared_udp.get_backend_addr().expect(""),
             self.dtls_cert.clone(),
             channel,
             &String::from_utf8_lossy(&req.body),
@@ -226,7 +228,10 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             whep_group: TaskGroup::new(worker),
             output: VecDeque::from([WorkerInnerOutput::Task(
                 Owner::worker(worker),
-                TaskOutput::Net(NetOutgoing::UdpListen(cfg.udp_addr)),
+                TaskOutput::Net(NetOutgoing::UdpListen {
+                    addr: cfg.udp_addr,
+                    reuse: false,
+                }),
             )]),
             shared_udp: SharedUdpPort::default(),
             last_input: None,
@@ -291,12 +296,12 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             WorkerInnerInput::Task(owner, event) => match event {
                 TaskInput::Net(NetIncoming::UdpListenResult { bind: _, result }) => {
                     log::info!("UdpListenResult: {:?}", result);
-                    let addr = result.as_ref().expect("Should listen shared port ok");
-                    self.shared_udp.set_addr(*addr);
+                    let (addr, slot) = result.as_ref().expect("Should listen shared port ok");
+                    self.shared_udp.set_backend_info(*addr, *slot);
                     self.last_input = None;
                     None
                 }
-                TaskInput::Net(NetIncoming::UdpPacket { from, to, data }) => {
+                TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }) => {
                     match self.shared_udp.map_remote(from, data) {
                         Some(TaskId::Whip(index)) => {
                             self.last_input = Some(WhipTask::TYPE);
@@ -305,7 +310,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                                 now,
                                 TaskGroupInput(
                                     owner,
-                                    TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+                                    TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }),
                                 ),
                             )?;
                             Some(WorkerInnerOutput::Task(owner, output))
@@ -317,7 +322,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                                 now,
                                 TaskGroupInput(
                                     owner,
-                                    TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+                                    TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }),
                                 ),
                             )?;
                             Some(WorkerInnerOutput::Task(owner, output))

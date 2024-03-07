@@ -12,11 +12,11 @@ pub use mio::MioBackend;
 pub enum BackendIncoming {
     UdpListenResult {
         bind: SocketAddr,
-        result: Result<SocketAddr, std::io::Error>,
+        result: Result<(SocketAddr, usize), std::io::Error>,
     },
     UdpPacket {
+        slot: usize,
         from: SocketAddr,
-        to: SocketAddr,
         len: usize,
     },
 }

@@ -11,6 +11,7 @@ heapless = "0.8"
 log = "0.4"
 mio = { version = "0.8", features = ["os-poll", "net"], optional = true }
 parking_lot = "0.12"
+socket2 = { version = "0.5", optional = true, features = ["all"] }
 
 [dev-dependencies]
 mockall = "0.12.1"
@@ -22,4 +23,4 @@ convert-enum = "0.1.0"
 
 [features]
 default = ["mio-backend"]
-mio-backend = ["mio"]
+mio-backend = ["mio", "socket2"]

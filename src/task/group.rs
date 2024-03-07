@@ -6,38 +6,53 @@ use crate::{collections::DynamicVec, Owner, Task, TaskInput, TaskOutput, WorkerI
 pub struct TaskGroupInput<'a, ChannelId, Event>(pub Owner, pub TaskInput<'a, ChannelId, Event>);
 
 /// Represents the output of a task group.
-pub struct TaskGroupOutput<'a, ChannelId, Event>(pub Owner, pub TaskOutput<'a, ChannelId, Event>);
+pub struct TaskGroupOutput<'a, ChannelIn, ChannelOut, Event>(
+    pub Owner,
+    pub TaskOutput<'a, ChannelIn, ChannelOut, Event>,
+);
 
-impl<'a, ChannelId, Event, IExtOut, IChannelId: From<ChannelId>, IEvent: From<Event>, ISCfg>
-    From<TaskGroupOutput<'a, ChannelId, Event>>
-    for WorkerInnerOutput<'a, IExtOut, IChannelId, IEvent, ISCfg>
+impl<
+        'a,
+        ChannelIn,
+        ChannelOut,
+        Event,
+        IExtOut,
+        IChannel: From<ChannelIn> + From<ChannelOut>,
+        IEvent: From<Event>,
+        ISCfg,
+    > From<TaskGroupOutput<'a, ChannelIn, ChannelOut, Event>>
+    for WorkerInnerOutput<'a, IExtOut, IChannel, IEvent, ISCfg>
 {
-    fn from(value: TaskGroupOutput<'a, ChannelId, Event>) -> Self {
+    fn from(value: TaskGroupOutput<'a, ChannelIn, ChannelOut, Event>) -> Self {
         WorkerInnerOutput::Task(value.0, value.1.convert_into())
     }
 }
 
 /// Represents a group of tasks.
 pub struct TaskGroup<
-    ChannelId: Hash + Eq + PartialEq,
-    Event,
-    T: Task<ChannelId, Event>,
+    ChannelIn: Hash + Eq + PartialEq,
+    ChannelOut,
+    EventIn,
+    EventOut,
+    T: Task<ChannelIn, ChannelOut, EventIn, EventOut>,
     const STACK_SIZE: usize,
 > {
     worker: u16,
     tasks: DynamicVec<Option<T>, STACK_SIZE>,
-    _tmp: PhantomData<(ChannelId, Event)>,
+    _tmp: PhantomData<(ChannelIn, ChannelOut, EventIn, EventOut)>,
     next_tick_index: Option<usize>,
     last_input_index: Option<usize>,
     destroy_list: DynamicVec<usize, STACK_SIZE>,
 }
 
 impl<
-        ChannelId: Hash + Eq + PartialEq,
-        Event,
-        T: Task<ChannelId, Event>,
+        ChannelIn: Hash + Eq + PartialEq,
+        ChannelOut,
+        EventIn,
+        EventOut,
+        T: Task<ChannelIn, ChannelOut, EventIn, EventOut>,
         const MAX_TASKS: usize,
-    > TaskGroup<ChannelId, Event, T, MAX_TASKS>
+    > TaskGroup<ChannelIn, ChannelOut, EventIn, EventOut, T, MAX_TASKS>
 {
     /// Creates a new task group with the specified worker ID.
     pub fn new(worker: u16) -> Self {
@@ -72,7 +87,10 @@ impl<
     /// The idea of this function is external will call it utils it returns None.
     /// If a task has output, we will return the output and save flag next_tick_index for next call.
     /// In the end of list, we will clear next_tick_index
-    pub fn on_tick<'a>(&mut self, now: Instant) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+    pub fn on_tick<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
         self.clear_destroyed_task();
 
         let mut index = self.next_tick_index.unwrap_or(0);
@@ -108,8 +126,8 @@ impl<
     pub fn on_event<'a>(
         &mut self,
         now: Instant,
-        input: TaskGroupInput<'a, ChannelId, Event>,
-    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+        input: TaskGroupInput<'a, ChannelIn, EventIn>,
+    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
         let TaskGroupInput(owner, input) = input;
         let index = owner.task_index().expect("should have task index");
         let task = self
@@ -117,7 +135,7 @@ impl<
             .get_mut_or_panic(index)
             .as_mut()
             .expect("should have task");
-        let out = task.on_input(now, input)?;
+        let out = task.on_event(now, input)?;
         self.last_input_index = Some(index);
         if let TaskOutput::Destroy = out {
             self.destroy_list.push_safe(index);
@@ -132,7 +150,7 @@ impl<
     pub fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ChannelId, Event>> {
+    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
         // We dont clear_destroyed_task here because have some case we have output after we received TaskOutput::Destroy the task.
         // We will clear_destroyed_task in next pop_output call.
 

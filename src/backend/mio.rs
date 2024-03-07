@@ -16,14 +16,14 @@
 //! let mut backend = MioBackend::<8, 64>::default();
 //!
 //! // Register an owner and bind a UDP socket
-//! backend.on_action(Owner::worker(0), NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))));
+//! backend.on_action(Owner::worker(0), NetOutgoing::UdpListen { addr: SocketAddr::from(([127, 0, 0, 1], 0)), reuse: false });
 //!
 //! let mut buf = [0; 1500];
 //!
 //! // Process incoming packets
 //! if let Some((incoming, owner)) = backend.pop_incoming(Duration::from_secs(1), &mut buf) {
 //!     match incoming {
-//!         BackendIncoming::UdpPacket { from, to, len } => {
+//!         BackendIncoming::UdpPacket { from, slot, len } => {
 //!             // Handle incoming UDP packet
 //!         }
 //!         BackendIncoming::UdpListenResult { bind, result } => {
@@ -33,10 +33,10 @@
 //! }
 //!
 //! // Send an outgoing UDP packet
-//! let from = SocketAddr::from(([127, 0, 0, 1], 1000));
+//! let slot = 0;
 //! let to = SocketAddr::from(([127, 0, 0, 1], 2000));
 //! let data = Buffer::Ref(b"hello");
-//! backend.on_action(Owner::worker(0), NetOutgoing::UdpPacket { from, to, data });
+//! backend.on_action(Owner::worker(0), NetOutgoing::UdpPacket { slot, to, data });
 //!
 //! // Unregister an owner and remove associated sockets
 //! backend.remove_owner(Owner::worker(0));
@@ -46,23 +46,21 @@
 use std::{net::SocketAddr, time::Duration, usize};
 
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};
+use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::{
-    backend::BackendOwner, collections::DynamicDeque, owner::Owner, ErrorDebugger2, NetOutgoing,
+    backend::BackendOwner,
+    collections::{DynamicDeque, DynamicVec},
+    owner::Owner,
+    NetOutgoing,
 };
 
 use super::{Backend, BackendIncoming};
 
 const QUEUE_PKT_NUM: usize = 512;
 
-fn addr_to_token(addr: SocketAddr) -> Token {
-    Token(addr.port() as usize)
-}
-
-struct UdpContainer<Owner> {
-    socket: UdpSocket,
-    local_addr: SocketAddr,
-    owner: Owner,
+enum SocketType {
+    Udp(UdpSocket, SocketAddr, Owner),
 }
 
 #[derive(Debug)]
@@ -70,21 +68,62 @@ enum InQueue<Owner> {
     UdpListenResult {
         owner: Owner,
         bind: SocketAddr,
-        result: Result<SocketAddr, std::io::Error>,
+        result: Result<(SocketAddr, usize), std::io::Error>,
     },
 }
 
-pub struct MioBackend<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> {
+pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
     poll: Poll,
     event_buffer: Events,
     event_buffer2: heapless::Deque<Token, QUEUE_PKT_NUM>,
-    udp_sockets: heapless::FnvIndexMap<Token, UdpContainer<Owner>, SOCKET_LIMIT>,
-    output: DynamicDeque<InQueue<Owner>, STACK_QUEUE_SIZE>,
+    sockets: DynamicVec<Option<SocketType>, SOCKET_STACK_SIZE>,
+    output: DynamicDeque<InQueue<Owner>, QUEUE_STACK_SIZE>,
+    cycle_count: u64,
 }
 
-impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
-    MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
+impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
+    MioBackend<SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
 {
+    fn create_udp(addr: SocketAddr, reuse: bool) -> Result<UdpSocket, std::io::Error> {
+        let socket = match addr {
+            SocketAddr::V4(addr) => {
+                let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+                if reuse {
+                    socket.set_reuse_address(true)?;
+                    socket.set_reuse_port(true)?;
+                }
+                socket.set_nonblocking(true)?;
+                socket.bind(&addr.into())?;
+                socket
+            }
+            SocketAddr::V6(addr) => {
+                let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+                if reuse {
+                    socket.set_reuse_address(true)?;
+                    socket.set_reuse_port(true)?;
+                }
+                socket.set_nonblocking(true)?;
+                socket.bind(&addr.into())?;
+                socket
+            }
+        };
+        Ok(UdpSocket::from_std(socket.into()))
+    }
+
+    fn socket_count(&self) -> usize {
+        self.sockets.iter().filter(|s| s.is_some()).count()
+    }
+
+    fn select_slot(&mut self) -> usize {
+        for (i, slot) in self.sockets.iter_mut().enumerate() {
+            if slot.is_none() {
+                return i;
+            }
+        }
+
+        self.sockets.push_safe(None);
+        self.sockets.len() - 1
+    }
     fn pop_cached_event(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
         if let Some(wait) = self.output.pop_front() {
             match wait {
@@ -99,21 +138,26 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize>
         }
         while !self.event_buffer2.is_empty() {
             if let Some(token) = self.event_buffer2.front() {
-                if let Some(socket) = self.udp_sockets.get(token) {
-                    if let Ok((buffer_size, addr)) = socket.socket.recv_from(buf) {
-                        return Some((
-                            BackendIncoming::UdpPacket {
-                                from: addr,
-                                to: socket.local_addr,
-                                len: buffer_size,
-                            },
-                            socket.owner,
-                        ));
-                    } else {
+                let slot_index = token.0;
+                match self.sockets.get_mut(slot_index) {
+                    Some(Some(SocketType::Udp(socket, _, owner))) => {
+                        self.event_buffer2.pop_front();
+                        if let Ok((buffer_size, addr)) = socket.recv_from(buf) {
+                            return Some((
+                                BackendIncoming::UdpPacket {
+                                    from: addr,
+                                    slot: slot_index,
+                                    len: buffer_size,
+                                },
+                                *owner,
+                            ));
+                        } else {
+                            self.event_buffer2.pop_front();
+                        }
+                    }
+                    _ => {
                         self.event_buffer2.pop_front();
                     }
-                } else {
-                    self.event_buffer2.pop_front();
                 }
             }
         }
@@ -130,8 +174,9 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
             poll: Poll::new().expect("should create mio-poll"),
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
             event_buffer2: heapless::Deque::new(),
-            udp_sockets: heapless::FnvIndexMap::new(),
+            sockets: DynamicVec::default(),
             output: DynamicDeque::default(),
+            cycle_count: 0,
         }
     }
 }
@@ -148,6 +193,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
             return Some(e);
         }
 
+        self.cycle_count += 1;
         if let Err(e) = self.poll.poll(&mut self.event_buffer, Some(timeout)) {
             log::error!("Mio poll error {:?}", e);
             return None;
@@ -172,39 +218,28 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
 {
     fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
-            NetOutgoing::UdpListen(addr) => {
-                assert!(
-                    !addr.ip().is_unspecified(),
-                    "should not bind to unspecified ip"
-                );
-                log::info!("MioBackend: UdpListen {:?}", addr);
-                match UdpSocket::bind(addr) {
+            NetOutgoing::UdpListen { addr, reuse } => {
+                log::info!("MioBackend: UdpListen {addr}, reuse: {reuse}");
+                match Self::create_udp(addr, reuse) {
                     Ok(mut socket) => {
                         let local_addr = socket.local_addr().expect("should access udp local_addr");
-                        let token = addr_to_token(local_addr);
-                        if let Err(e) =
-                            self.poll
-                                .registry()
-                                .register(&mut socket, token, Interest::READABLE)
-                        {
+                        let slot = self.select_slot();
+                        if let Err(e) = self.poll.registry().register(
+                            &mut socket,
+                            Token(slot),
+                            Interest::READABLE,
+                        ) {
                             log::error!("Mio register error {:?}", e);
                             return;
                         }
+
                         self.output.push_back_safe(InQueue::UdpListenResult {
                             owner,
                             bind: addr,
-                            result: Ok(local_addr),
+                            result: Ok((local_addr, slot)),
                         });
-                        self.udp_sockets
-                            .insert(
-                                token,
-                                UdpContainer {
-                                    socket,
-                                    local_addr,
-                                    owner,
-                                },
-                            )
-                            .print_err2("MioBackend udp_sockets full");
+                        *self.sockets.get_mut_or_panic(slot) =
+                            Some(SocketType::Udp(socket, local_addr, owner));
                     }
                     Err(e) => {
                         log::error!("Mio bind error {:?}", e);
@@ -216,32 +251,36 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     }
                 }
             }
-            NetOutgoing::UdpPacket { from, to, data } => {
-                let token = addr_to_token(from);
-                if let Some(socket) = self.udp_sockets.get_mut(&token) {
-                    if let Err(e) = socket.socket.send_to(&data, to) {
-                        log::error!("Mio send_to error {:?}", e);
+            NetOutgoing::UdpPacket { to, slot, data } => {
+                if let Some(socket) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Udp(socket, _, _)) = socket {
+                        if let Err(e) = socket.send_to(&data, to) {
+                            log::error!("Mio send_to error {:?}", e);
+                        }
+                    } else {
+                        log::error!("Mio send_to error: no socket for {:?}", to);
                     }
                 } else {
-                    log::error!("Mio send_to error: no socket for {:?}", from);
+                    log::error!("Mio send_to error: no socket for {:?}", to);
                 }
             }
         }
     }
 
+    // remove all sockets owned by owner and unregister from poll
     fn remove_owner(&mut self, owner: Owner) {
-        // remove all sockets owned by owner and unregister from poll
-        let mut tokens = Vec::new();
-        for (token, socket) in self.udp_sockets.iter_mut() {
-            if socket.owner == owner {
-                if let Err(e) = self.poll.registry().deregister(&mut socket.socket) {
-                    log::error!("Mio deregister error {:?}", e);
+        for slot in self.sockets.iter_mut() {
+            match slot {
+                Some(SocketType::Udp(socket, _, owner2)) => {
+                    if *owner2 == owner {
+                        if let Err(e) = self.poll.registry().deregister(socket) {
+                            log::error!("Mio deregister error {:?}", e);
+                        }
+                        *slot = None;
+                    }
                 }
-                tokens.push(*token);
+                None => {}
             }
-        }
-        for token in tokens {
-            self.udp_sockets.remove(&token);
         }
     }
 }
@@ -264,32 +303,44 @@ mod tests {
         let mut backend = MioBackend::<2, 2>::default();
 
         let mut addr1 = None;
+        let mut slot1 = 0;
         let mut addr2 = None;
+        let mut slot2 = 0;
 
         let mut buf = [0; 1500];
 
         backend.on_action(
             Owner::worker(1),
-            NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))),
+            NetOutgoing::UdpListen {
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                reuse: false,
+            },
         );
         match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
             Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
                 assert_eq!(owner, Owner::worker(1));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
-                addr1 = Some(result.expect("Expected Ok"));
+                let res = result.expect("Expected Ok");
+                addr1 = Some(res.0);
+                slot1 = res.1;
             }
             _ => panic!("Expected UdpListenResult"),
         }
 
         backend.on_action(
             Owner::worker(2),
-            NetOutgoing::UdpListen(SocketAddr::from(([127, 0, 0, 1], 0))),
+            NetOutgoing::UdpListen {
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                reuse: false,
+            },
         );
         match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
             Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
                 assert_eq!(owner, Owner::worker(2));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
-                addr2 = Some(result.expect("Expected Ok"));
+                let res = result.expect("Expected Ok");
+                addr2 = Some(res.0);
+                slot2 = res.1;
             }
             _ => panic!("Expected UdpListenResult"),
         }
@@ -298,26 +349,26 @@ mod tests {
         backend.on_action(
             Owner::worker(1),
             NetOutgoing::UdpPacket {
-                from: addr1.expect(""),
+                slot: slot1,
                 to: addr2.expect(""),
                 data: Buffer::Ref(b"hello"),
             },
         );
 
         match backend.pop_incoming(Duration::from_secs(1), &mut buf) {
-            Some((BackendIncoming::UdpPacket { from, to, len }, owner)) => {
+            Some((BackendIncoming::UdpPacket { from, slot, len }, owner)) => {
                 assert_eq!(owner, Owner::worker(2));
                 assert_eq!(from, addr1.expect(""));
-                assert_eq!(to, addr2.expect(""));
+                assert_eq!(slot, slot2);
                 assert_eq!(&buf[0..len], b"hello");
             }
             _ => panic!("Expected UdpPacket"),
         }
 
         backend.remove_owner(Owner::worker(1));
-        assert_eq!(backend.udp_sockets.len(), 1);
+        assert_eq!(backend.socket_count(), 1);
 
         backend.remove_owner(Owner::worker(2));
-        assert_eq!(backend.udp_sockets.len(), 0);
+        assert_eq!(backend.socket_count(), 0);
     }
 }

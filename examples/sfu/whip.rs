@@ -8,7 +8,7 @@ use str0m::{
     change::{DtlsCert, SdpOffer},
     media::{MediaKind, Mid},
     net::{Protocol, Receive},
-    Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    Candidate, Event as Str0mEvent, IceConnectionState, Input, Output, Rtc,
 };
 
 use super::{ChannelId, SfuEvent, TrackMedia};
@@ -20,17 +20,20 @@ pub struct WhipTaskBuildResult {
 }
 
 pub struct WhipTask {
+    backend_slot: usize,
+    backend_addr: SocketAddr,
     timeout: Option<Instant>,
     rtc: Rtc,
     audio_mid: Option<Mid>,
     video_mid: Option<Mid>,
     channel_id: u64,
-    output: DynamicDeque<TaskOutput<'static, ChannelId, SfuEvent>, 8>,
+    output: DynamicDeque<TaskOutput<'static, ChannelId, ChannelId, SfuEvent>, 8>,
 }
 
 impl WhipTask {
     pub fn build(
-        addr: SocketAddr,
+        backend_slot: usize,
+        backend_addr: SocketAddr,
         dtls_cert: DtlsCert,
         channel: u64,
         sdp: &str,
@@ -44,7 +47,7 @@ impl WhipTask {
         rtc.direct_api().enable_twcc_feedback();
 
         rtc.add_local_candidate(
-            Candidate::host(addr, Protocol::Udp).expect("Should create candidate"),
+            Candidate::host(backend_addr, Protocol::Udp).expect("Should create candidate"),
         );
 
         let offer = SdpOffer::from_sdp_string(&sdp).expect("Should parse offer");
@@ -53,6 +56,8 @@ impl WhipTask {
             .accept_offer(offer)
             .expect("Should accept offer");
         let instance = Self {
+            backend_slot,
+            backend_addr,
             timeout: None,
             rtc,
             audio_mid: None,
@@ -72,7 +77,7 @@ impl WhipTask {
         &mut self,
         now: Instant,
         has_input: bool,
-    ) -> Option<TaskOutput<'static, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'static, ChannelId, ChannelId, SfuEvent>> {
         if let Some(o) = self.output.pop_front() {
             return Some(o);
         }
@@ -94,21 +99,21 @@ impl WhipTask {
                 }
                 Output::Transmit(send) => {
                     return TaskOutput::Net(NetOutgoing::UdpPacket {
-                        from: send.source,
+                        slot: self.backend_slot,
                         to: send.destination,
                         data: Buffer::Vec(send.contents.into()),
                     })
                     .into();
                 }
                 Output::Event(e) => match e {
-                    Event::Connected => {
+                    Str0mEvent::Connected => {
                         log::info!("WhipServerTask connected");
                         return TaskOutput::Bus(BusEvent::ChannelSubscribe(
                             ChannelId::PublishVideo(self.channel_id),
                         ))
                         .into();
                     }
-                    Event::MediaAdded(media) => {
+                    Str0mEvent::MediaAdded(media) => {
                         log::info!("WhipServerTask media added: {:?}", media);
                         if media.kind == MediaKind::Audio {
                             self.audio_mid = Some(media.mid);
@@ -116,7 +121,7 @@ impl WhipTask {
                             self.video_mid = Some(media.mid);
                         }
                     }
-                    Event::IceConnectionStateChange(state) => match state {
+                    Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
                             self.output.push_back_safe(TaskOutput::Bus(
                                 BusEvent::ChannelUnsubscribe(ChannelId::PublishVideo(
@@ -128,7 +133,7 @@ impl WhipTask {
                         }
                         _ => {}
                     },
-                    Event::RtpPacket(rtp) => {
+                    Str0mEvent::RtpPacket(rtp) => {
                         let channel = if *rtp.header.payload_type == 111 {
                             ChannelId::ConsumeAudio(self.channel_id)
                         } else {
@@ -138,7 +143,7 @@ impl WhipTask {
                         return Some(TaskOutput::Bus(BusEvent::ChannelPublish(
                             channel,
                             false,
-                            SfuEvent::Media(media),
+                            SfuEvent::Media(media).into(),
                         )));
                     }
                     _ => {}
@@ -150,12 +155,15 @@ impl WhipTask {
     }
 }
 
-impl Task<ChannelId, SfuEvent> for WhipTask {
+impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
     /// The type identifier for the task.
     const TYPE: u16 = 0;
 
     /// Called on each tick of the task.
-    fn on_tick<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, SfuEvent>> {
+    fn on_tick<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
         let timeout = self.timeout?;
         if now < timeout {
             return None;
@@ -169,17 +177,22 @@ impl Task<ChannelId, SfuEvent> for WhipTask {
     }
 
     /// Called when an input event is received for the task.
-    fn on_input<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
         input: TaskInput<'a, ChannelId, SfuEvent>,
-    ) -> Option<TaskOutput<'a, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
         match input {
             TaskInput::Net(event) => match event {
-                NetIncoming::UdpPacket { from, to, data } => {
+                NetIncoming::UdpPacket {
+                    from,
+                    slot: _,
+                    data,
+                } => {
                     if let Err(e) = self.rtc.handle_input(Input::Receive(
                         now,
-                        Receive::new(Protocol::Udp, from, to, data).expect("Should parse udp"),
+                        Receive::new(Protocol::Udp, from, self.backend_addr, data)
+                            .expect("Should parse udp"),
                     )) {
                         log::error!("Error handling udp: {}", e);
                     }
@@ -216,7 +229,10 @@ impl Task<ChannelId, SfuEvent> for WhipTask {
     }
 
     /// Retrieves the next output event from the task.
-    fn pop_output<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, SfuEvent>> {
+    fn pop_output<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
         self.pop_event_inner(now, false)
     }
 }

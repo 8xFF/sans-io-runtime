@@ -4,7 +4,8 @@ use std::{collections::HashMap, fmt::Debug, hash::Hash, net::SocketAddr};
 
 #[derive(Debug)]
 pub struct SharedUdpPort<Task> {
-    addr: Option<SocketAddr>,
+    backend_addr: Option<SocketAddr>,
+    backend_slot: Option<usize>,
     task_remotes: HashMap<SocketAddr, Task>,
     task_remotes_map: HashMap<Task, Vec<SocketAddr>>,
     task_ufrags: HashMap<String, Task>,
@@ -14,7 +15,8 @@ pub struct SharedUdpPort<Task> {
 impl<Task> Default for SharedUdpPort<Task> {
     fn default() -> Self {
         Self {
-            addr: None,
+            backend_addr: None,
+            backend_slot: None,
             task_remotes: HashMap::new(),
             task_remotes_map: HashMap::new(),
             task_ufrags: HashMap::new(),
@@ -24,12 +26,17 @@ impl<Task> Default for SharedUdpPort<Task> {
 }
 
 impl<Task: Debug + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
-    pub fn set_addr(&mut self, addr: SocketAddr) {
-        self.addr = Some(addr);
+    pub fn set_backend_info(&mut self, addr: SocketAddr, slot: usize) {
+        self.backend_addr = Some(addr);
+        self.backend_slot = Some(slot);
     }
 
-    pub fn get_addr(&self) -> Option<SocketAddr> {
-        self.addr
+    pub fn get_backend_addr(&self) -> Option<SocketAddr> {
+        self.backend_addr
+    }
+
+    pub fn get_backend_slot(&self) -> Option<usize> {
+        self.backend_slot
     }
 
     pub fn add_ufrag(&mut self, ufrag: String, task: Task) {

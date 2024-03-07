@@ -13,14 +13,15 @@ pub mod group;
 pub mod group_state;
 
 /// Represents an incoming network event.
+#[derive(Debug)]
 pub enum NetIncoming<'a> {
     UdpListenResult {
         bind: SocketAddr,
-        result: Result<SocketAddr, std::io::Error>,
+        result: Result<(SocketAddr, usize), std::io::Error>,
     },
     UdpPacket {
+        slot: usize,
         from: SocketAddr,
-        to: SocketAddr,
         data: &'a [u8],
     },
 }
@@ -31,9 +32,9 @@ impl<'a> NetIncoming<'a> {
             BackendIncoming::UdpListenResult { bind, result } => {
                 Self::UdpListenResult { bind, result }
             }
-            BackendIncoming::UdpPacket { from, to, len } => {
+            BackendIncoming::UdpPacket { from, slot, len } => {
                 let data = &buf[..len];
-                Self::UdpPacket { from, to, data }
+                Self::UdpPacket { from, slot, data }
             }
         }
     }
@@ -56,24 +57,30 @@ impl<'a> Deref for Buffer<'a> {
 
 /// Represents an outgoing network event.
 pub enum NetOutgoing<'a> {
-    UdpListen(SocketAddr),
+    UdpListen {
+        addr: SocketAddr,
+        reuse: bool,
+    },
     UdpPacket {
-        from: SocketAddr,
+        slot: usize,
         to: SocketAddr,
         data: Buffer<'a>,
     },
 }
 
 /// Represents an input event for a task.
+#[derive(Debug)]
 pub enum TaskInput<'a, ChannelId, Event> {
     Net(NetIncoming<'a>),
     Bus(ChannelId, Event),
 }
 
 impl<'a, ChannelId, Event> TaskInput<'a, ChannelId, Event> {
-    pub fn convert_into<IChannelId: TryFrom<ChannelId>, IEvent: TryFrom<Event>>(
-        self,
-    ) -> Option<TaskInput<'a, IChannelId, IEvent>> {
+    pub fn convert_into<IChannelId, IEvent>(self) -> Option<TaskInput<'a, IChannelId, IEvent>>
+    where
+        ChannelId: TryInto<IChannelId>,
+        Event: TryInto<IEvent>,
+    {
         match self {
             TaskInput::Net(net) => Some(TaskInput::Net(net)),
             TaskInput::Bus(channel, event) => Some(TaskInput::Bus(
@@ -85,21 +92,25 @@ impl<'a, ChannelId, Event> TaskInput<'a, ChannelId, Event> {
 }
 
 /// Represents an output event for a task.
-pub enum TaskOutput<'a, ChannelId, Event> {
+pub enum TaskOutput<'a, ChannelIn, ChannelOut, Event> {
     Net(NetOutgoing<'a>),
-    Bus(BusEvent<ChannelId, Event>),
+    Bus(BusEvent<ChannelIn, ChannelOut, Event>),
     Destroy,
 }
 
-impl<'a, ChannelId, Event> TaskOutput<'a, ChannelId, Event> {
-    pub fn convert_into<NChannelId: From<ChannelId>, NEvent: From<Event>>(
+impl<'a, ChannelIn, ChannelOut, Event> TaskOutput<'a, ChannelIn, ChannelOut, Event> {
+    pub fn convert_into<
+        NChannelIn: From<ChannelIn>,
+        NChannelOut: From<ChannelOut>,
+        NEvent: From<Event>,
+    >(
         self,
-    ) -> TaskOutput<'a, NChannelId, NEvent> {
+    ) -> TaskOutput<'a, NChannelIn, NChannelOut, NEvent> {
         match self {
             TaskOutput::Net(net) => TaskOutput::Net(match net {
-                NetOutgoing::UdpListen(addr) => NetOutgoing::UdpListen(addr),
-                NetOutgoing::UdpPacket { from, to, data } => {
-                    NetOutgoing::UdpPacket { from, to, data }
+                NetOutgoing::UdpListen { addr, reuse } => NetOutgoing::UdpListen { addr, reuse },
+                NetOutgoing::UdpPacket { slot, to, data } => {
+                    NetOutgoing::UdpPacket { slot, to, data }
                 }
             }),
             TaskOutput::Bus(event) => TaskOutput::Bus(event.convert_into()),
@@ -109,20 +120,26 @@ impl<'a, ChannelId, Event> TaskOutput<'a, ChannelId, Event> {
 }
 
 /// Represents a task.
-pub trait Task<ChannelId, Event> {
+pub trait Task<ChannelIn, ChannelOut, EventIn, EventOut> {
     /// The type identifier for the task.
     const TYPE: u16;
 
     /// Called each time the task is ticked. Default is 1ms.
-    fn on_tick<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, Event>>;
-
-    /// Called when an input event is received for the task.
-    fn on_input<'a>(
+    fn on_tick<'a>(
         &mut self,
         now: Instant,
-        input: TaskInput<'a, ChannelId, Event>,
-    ) -> Option<TaskOutput<'a, ChannelId, Event>>;
+    ) -> Option<TaskOutput<'a, ChannelIn, ChannelOut, EventOut>>;
+
+    /// Called when an input event is received for the task.
+    fn on_event<'a>(
+        &mut self,
+        now: Instant,
+        input: TaskInput<'a, ChannelIn, EventIn>,
+    ) -> Option<TaskOutput<'a, ChannelIn, ChannelOut, EventOut>>;
 
     /// Retrieves the next output event from the task.
-    fn pop_output<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, Event>>;
+    fn pop_output<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelIn, ChannelOut, EventOut>>;
 }

@@ -10,15 +10,17 @@
 /// let mut state = TaskGroupOutputsState::<2>::default();
 /// assert_eq!(state.current(), Some(0));
 /// state.process(Some(1));
+/// assert_eq!(state.current(), Some(0));
+/// state.process(None::<u8>);
 /// assert_eq!(state.current(), Some(1));
-/// state.process(Some(2));
+/// state.process(None::<u8>);
 /// assert_eq!(state.current(), None);
 ///
 /// // next cycle
 /// assert_eq!(state.current(), Some(0));
-/// state.process(Some(3));
+/// state.process(None::<u8>);
 /// assert_eq!(state.current(), Some(1));
-/// state.process(Some(4));
+/// state.process(None::<u8>);
 /// assert_eq!(state.current(), None);
 /// ```
 #[derive(Default)]
@@ -39,7 +41,7 @@ impl<const LEN: u16> TaskGroupOutputsState<LEN> {
 
     /// Flag that the current task group is finished.
     pub fn process<R>(&mut self, res: Option<R>) -> Option<R> {
-        if res.is_some() {
+        if res.is_none() {
             self.current_index += 1;
         }
         res
@@ -55,15 +57,17 @@ mod tests {
         let mut state = TaskGroupOutputsState::<2>::default();
         assert_eq!(state.current(), Some(0));
         state.process(Some(1));
+        assert_eq!(state.current(), Some(0));
+        state.process(None::<u8>);
         assert_eq!(state.current(), Some(1));
-        state.process(Some(1));
+        state.process(None::<u8>);
         assert_eq!(state.current(), None);
 
         // next cycle
         assert_eq!(state.current(), Some(0));
-        state.process(Some(1));
+        state.process(None::<u8>);
         assert_eq!(state.current(), Some(1));
-        state.process(Some(1));
+        state.process(None::<u8>);
         assert_eq!(state.current(), None);
     }
 }

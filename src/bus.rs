@@ -7,14 +7,14 @@ mod local_hub;
 pub use leg::*;
 pub use local_hub::*;
 
-pub enum BusEvent<ChannelId, MSG> {
-    ChannelSubscribe(ChannelId),
-    ChannelUnsubscribe(ChannelId),
+pub enum BusEvent<ChannelIn, ChannelOut, MSG> {
+    ChannelSubscribe(ChannelIn),
+    ChannelUnsubscribe(ChannelIn),
     /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
-    ChannelPublish(ChannelId, bool, MSG),
+    ChannelPublish(ChannelOut, bool, MSG),
 }
 
-impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
+impl<ChannelIn, ChannelOut, MSG> BusEvent<ChannelIn, ChannelOut, MSG> {
     pub fn high_priority(&self) -> bool {
         match self {
             Self::ChannelSubscribe(_) => true,
@@ -23,9 +23,13 @@ impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
         }
     }
 
-    pub fn convert_into<NChannelId: From<ChannelId>, NMSG: From<MSG>>(
+    pub fn convert_into<
+        NChannelIn: From<ChannelIn>,
+        NChannelOut: From<ChannelOut>,
+        NMSG: From<MSG>,
+    >(
         self,
-    ) -> BusEvent<NChannelId, NMSG> {
+    ) -> BusEvent<NChannelIn, NChannelOut, NMSG> {
         match self {
             Self::ChannelSubscribe(channel) => BusEvent::ChannelSubscribe(channel.into()),
             Self::ChannelUnsubscribe(channel) => BusEvent::ChannelUnsubscribe(channel.into()),
@@ -182,6 +186,8 @@ impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SI
                     msg.clone(),
                 );
             }
+        } else {
+            log::warn!("Channel {:?} not found", channel);
         }
     }
 }

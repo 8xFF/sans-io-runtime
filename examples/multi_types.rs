@@ -1,11 +1,8 @@
-use std::{
-    marker::PhantomData,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use sans_io_runtime::{
-    backend::MioBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutput,
-    TaskGroupOutputsState, TaskInput, TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    backend::MioBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutputsState,
+    TaskInput, TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ICfg = ();
@@ -89,25 +86,28 @@ impl Task1 {
     }
 }
 
-impl Task<Type1Channel, Type1Event> for Task1 {
+impl Task<Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
     const TYPE: u16 = 0;
 
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<TaskOutput<'a, Type1Channel, Type1Event>> {
+    fn on_tick<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
-    fn on_input<'b>(
+    fn on_event<'b>(
         &mut self,
         _now: Instant,
         _input: TaskInput<'b, Type1Channel, Type1Event>,
-    ) -> Option<TaskOutput<'b, Type1Channel, Type1Event>> {
+    ) -> Option<TaskOutput<'b, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1Channel, Type1Event>> {
+    ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 }
@@ -123,33 +123,36 @@ impl Task2 {
     }
 }
 
-impl Task<Type2Channel, Type2Event> for Task2 {
+impl Task<Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
     const TYPE: u16 = 1;
 
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<TaskOutput<'a, Type2Channel, Type2Event>> {
+    fn on_tick<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
-    fn on_input<'b>(
+    fn on_event<'b>(
         &mut self,
         _now: Instant,
         _input: TaskInput<'b, Type2Channel, Type2Event>,
-    ) -> Option<TaskOutput<'b, Type2Channel, Type2Event>> {
+    ) -> Option<TaskOutput<'b, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2Channel, Type2Event>> {
+    ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 }
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<Type1Channel, Type1Event, Task1, 16>,
-    echo_type2: TaskGroup<Type2Channel, Type2Event, Task2, 16>,
+    echo_type1: TaskGroup<Type1Channel, Type1Channel, Type1Event, Type1Event, Task1, 16>,
+    echo_type2: TaskGroup<Type2Channel, Type2Channel, Type2Event, Type2Event, Task2, 16>,
     group_state: TaskGroupOutputsState<2>,
     last_input_index: Option<u16>,
 }

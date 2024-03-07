@@ -52,9 +52,9 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match self.output.pop_front()? {
-            EchoWorkerInQueue::UdpListen(bind) => Some(WorkerInnerOutput::Task(
+            EchoWorkerInQueue::UdpListen(addr) => Some(WorkerInnerOutput::Task(
                 Owner::worker(self.worker),
-                TaskOutput::Net(NetOutgoing::UdpListen(bind)),
+                TaskOutput::Net(NetOutgoing::UdpListen { addr, reuse: false }),
             )),
         }
     }
@@ -73,14 +73,14 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
             }
             WorkerInnerInput::Task(
                 _owner,
-                TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+                TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }),
             ) => {
                 assert!(data.len() <= 1500, "data too large");
 
                 Some(WorkerInnerOutput::Task(
                     Owner::worker(self.worker),
                     TaskOutput::Net(NetOutgoing::UdpPacket {
-                        from: to,
+                        slot,
                         to: from,
                         data: Buffer::Vec(data.to_vec()),
                     }),
