@@ -5,10 +5,17 @@ use crate::{owner::Owner, task::NetOutgoing};
 #[cfg(feature = "mio-backend")]
 mod mio;
 
+#[cfg(feature = "poll-backend")]
+mod poll;
+
 #[cfg(feature = "mio-backend")]
 pub use mio::MioBackend;
 
+#[cfg(feature = "poll-backend")]
+pub use poll::PollBackend;
+
 /// Represents an incoming network event.
+#[derive(Debug)]
 pub enum BackendIncoming {
     UdpListenResult {
         bind: SocketAddr,
@@ -22,11 +29,8 @@ pub enum BackendIncoming {
 }
 
 pub trait Backend: Default + BackendOwner {
-    fn pop_incoming(
-        &mut self,
-        timeout: Duration,
-        buf: &mut [u8],
-    ) -> Option<(BackendIncoming, Owner)>;
+    fn poll_incoming(&mut self, timeout: Duration);
+    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)>;
     fn finish_outgoing_cycle(&mut self);
     fn finish_incoming_cycle(&mut self);
 }

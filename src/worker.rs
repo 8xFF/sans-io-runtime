@@ -189,13 +189,15 @@ impl<
         );
 
         //one cycle is process in 1ms then we minus 1ms with eslaped time
-        let mut remain_time = Duration::from_millis(1)
+        let remain_time = Duration::from_millis(1)
             .checked_sub(now.elapsed())
             .unwrap_or_else(|| Duration::from_micros(1));
 
+        self.backend.poll_incoming(remain_time);
+
         while let Some((event, owner)) = self
             .backend
-            .pop_incoming(remain_time, &mut self.network_buffer)
+            .pop_incoming(&mut self.network_buffer)
         {
             let event = NetIncoming::from_backend(event, &self.network_buffer);
             Self::on_input_event(
@@ -207,9 +209,6 @@ impl<
                 &mut self.backend,
                 &mut self.bus_local_hub,
             );
-            remain_time = Duration::from_millis(1)
-                .checked_sub(now.elapsed())
-                .unwrap_or_else(|| Duration::from_micros(1));
         }
 
         self.backend.finish_incoming_cycle();
