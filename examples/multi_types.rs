@@ -1,4 +1,10 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use sans_io_runtime::{
     backend::MioBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutputsState,
@@ -110,6 +116,13 @@ impl Task<Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
     ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
+        Some(TaskOutput::Destroy)
+    }
 }
 
 #[derive(Debug)]
@@ -146,6 +159,14 @@ impl Task<Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
         _now: Instant,
     ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
         None
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
+        log::info!("received shutdown");
+        Some(TaskOutput::Destroy)
     }
 }
 
@@ -247,6 +268,27 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
             _ => unreachable!(),
         }
     }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+        loop {
+            match self.group_state.current()? {
+                0 => {
+                    if let Some(e) = self.group_state.process(self.echo_type1.shutdown(now)) {
+                        return Some(e.into());
+                    }
+                }
+                1 => {
+                    if let Some(e) = self.group_state.process(self.echo_type2.shutdown(now)) {
+                        return Some(e.into());
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
 }
 
 fn main() {
@@ -257,12 +299,26 @@ fn main() {
     controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
     controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
 
-    for _i in 0..100 {
+    for _i in 0..10 {
         controller.spawn(TestSCfg::Type1(Type1Cfg {}));
         controller.spawn(TestSCfg::Type2(Type2Cfg {}));
     }
-    loop {
-        controller.process();
-        std::thread::sleep(Duration::from_millis(100));
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("Should register hook");
+    let mut shutdown_wait = 0;
+
+    while controller.process().is_some() {
+        if term.load(Ordering::Relaxed) {
+            if shutdown_wait == 300 {
+                log::warn!("Force shutdown");
+                break;
+            }
+            shutdown_wait += 1;
+            controller.shutdown();
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
+
+    log::info!("Server shutdown");
 }

@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use crate::collections::DynamicDeque;
+use crate::{backend::Awaker, collections::DynamicDeque};
 
 /// Represents the identifier of a channel.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -17,8 +17,65 @@ pub enum BusLegSenderErr {
     ChannelFull,
 }
 
-type SharedBusQueue<ChannelId, MSG, const STATIC_SIZE: usize> =
-    Arc<Mutex<DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>>>;
+struct SharedBusQueue<ChannelId, MSG, const STATIC_SIZE: usize> {
+    queue: Arc<
+        Mutex<(
+            Option<Arc<dyn Awaker>>,
+            DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>,
+        )>,
+    >,
+}
+
+impl<ChannelId, MSG, const STATIC_SIZE: usize> Clone
+    for SharedBusQueue<ChannelId, MSG, STATIC_SIZE>
+{
+    fn clone(&self) -> Self {
+        Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<ChannelId, MSG, const STATIC_SIZE: usize> SharedBusQueue<ChannelId, MSG, STATIC_SIZE> {
+    fn send_safe(&self, source: BusEventSource<ChannelId>, msg: MSG) -> usize {
+        let mut slot = self.queue.lock();
+        slot.1.push_back_safe((source, msg));
+        let after = slot.1.len();
+        if after == 1 {
+            if let Some(awaker) = slot.0.as_ref() {
+                awaker.awake();
+            }
+        }
+        after
+    }
+
+    fn send(
+        &self,
+        source: BusEventSource<ChannelId>,
+        safe: bool,
+        msg: MSG,
+    ) -> Result<usize, BusLegSenderErr> {
+        let mut slot = self.queue.lock();
+        slot.1
+            .push_back(safe, (source, msg))
+            .map_err(|_| BusLegSenderErr::ChannelFull)?;
+        let after = slot.1.len();
+        if after == 1 {
+            if let Some(awaker) = slot.0.as_ref() {
+                awaker.awake();
+            }
+        }
+        Ok(after)
+    }
+
+    fn recv(&self) -> Option<(BusEventSource<ChannelId>, MSG)> {
+        self.queue.lock().1.pop_front()
+    }
+
+    fn set_awaker(&self, awaker: Arc<dyn Awaker>) {
+        self.queue.lock().0 = Some(awaker);
+    }
+}
 
 /// A sender for a bus leg.
 ///
@@ -49,9 +106,7 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegSender<ChannelId, MSG, STAT
     /// Returns `Ok(len)` if the message is successfully sent, where `len` is the new length of the queue.
     /// Returns `Err(ChannelFull)` if the queue is already full and the message cannot be sent.
     pub fn send_safe(&self, source: BusEventSource<ChannelId>, msg: MSG) -> usize {
-        let mut queue = self.queue.lock();
-        queue.push_back_safe((source, msg));
-        queue.len()
+        self.queue.send_safe(source, msg)
     }
 
     /// Sends a message through the bus leg.
@@ -71,11 +126,7 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegSender<ChannelId, MSG, STAT
         safe: bool,
         msg: MSG,
     ) -> Result<usize, BusLegSenderErr> {
-        let mut queue = self.queue.lock();
-        queue
-            .push_back(safe, (source, msg))
-            .map_err(|_| BusLegSenderErr::ChannelFull)?;
-        Ok(queue.len())
+        self.queue.send(source, safe, msg)
     }
 }
 
@@ -96,7 +147,11 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> BusLegReceiver<ChannelId, MSG, ST
     /// and `msg` is the received message.
     /// Returns `None` if the queue is empty.
     pub fn recv(&self) -> Option<(BusEventSource<ChannelId>, MSG)> {
-        self.queue.lock().pop_front()
+        self.queue.recv()
+    }
+
+    pub fn set_awaker(&self, awaker: Arc<dyn Awaker>) {
+        self.queue.set_awaker(awaker);
     }
 }
 
@@ -109,7 +164,9 @@ pub fn create_bus_leg<ChannelId, MSG, const STATIC_SIZE: usize>() -> (
     BusLegSender<ChannelId, MSG, STATIC_SIZE>,
     BusLegReceiver<ChannelId, MSG, STATIC_SIZE>,
 ) {
-    let queue = Arc::new(Mutex::new(DynamicDeque::default()));
+    let queue = SharedBusQueue {
+        queue: Arc::new(Mutex::new((None, DynamicDeque::default()))),
+    };
     let sender = BusLegSender {
         queue: queue.clone(),
     };

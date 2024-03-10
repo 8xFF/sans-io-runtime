@@ -7,6 +7,8 @@ mod local_hub;
 pub use leg::*;
 pub use local_hub::*;
 
+use crate::backend::Awaker;
+
 pub enum BusEvent<ChannelIn, ChannelOut, MSG> {
     ChannelSubscribe(ChannelIn),
     ChannelUnsubscribe(ChannelIn),
@@ -126,6 +128,10 @@ impl<ChannelId, MSG, const STACK_SIZE: usize> BusWorker<ChannelId, MSG, STACK_SI
 
     pub fn recv(&self) -> Option<(BusEventSource<ChannelId>, MSG)> {
         self.receiver.recv()
+    }
+
+    pub fn set_awaker(&self, awaker: Arc<dyn Awaker>) {
+        self.receiver.set_awaker(awaker);
     }
 }
 

@@ -30,6 +30,9 @@
 //!         BackendIncoming::UdpListenResult { bind, result } => {
 //!             // Handle UDP listen result
 //!         }
+//!         BackendIncoming::Awake => {
+//!             // Handle awake event
+//!         }
 //!     }
 //! }
 //!
@@ -44,9 +47,9 @@
 //! ```
 //!
 //! Note: This module assumes that the sans-io-runtime crate and the Mio library are already imported and available.
-use std::{net::SocketAddr, time::Duration, usize};
+use std::{net::SocketAddr, sync::Arc, time::Duration, usize};
 
-use mio::{net::UdpSocket, Events, Interest, Poll, Token};
+use mio::{net::UdpSocket, Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::{
@@ -56,11 +59,12 @@ use crate::{
     NetOutgoing,
 };
 
-use super::{Backend, BackendIncoming};
+use super::{Awaker, Backend, BackendIncoming};
 
 const QUEUE_PKT_NUM: usize = 512;
 
 enum SocketType {
+    Waker(),
     Udp(UdpSocket, SocketAddr, Owner),
 }
 
@@ -80,6 +84,7 @@ pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: us
     sockets: DynamicVec<Option<SocketType>, SOCKET_STACK_SIZE>,
     output: DynamicDeque<InQueue<Owner>, QUEUE_STACK_SIZE>,
     cycle_count: u64,
+    awaker: Arc<MioAwaker>,
 }
 
 impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
@@ -156,6 +161,11 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
                             self.event_buffer2.pop_front();
                         }
                     }
+                    Some(Some(SocketType::Waker())) => {
+                        self.event_buffer2.pop_front();
+                        return Some((BackendIncoming::Awake, Owner::worker(0)));
+                        //TODO dont use 0
+                    }
                     _ => {
                         self.event_buffer2.pop_front();
                     }
@@ -171,13 +181,16 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
     for MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
     fn default() -> Self {
+        let poll = Poll::new().expect("should create mio-poll");
+        let waker = Waker::new(poll.registry(), Token(0)).expect("should create mio-waker");
         Self {
-            poll: Poll::new().expect("should create mio-poll"),
+            poll,
             event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
             event_buffer2: heapless::Deque::new(),
-            sockets: DynamicVec::default(),
+            sockets: DynamicVec::from([Some(SocketType::Waker())]),
             output: DynamicDeque::default(),
             cycle_count: 0,
+            awaker: Arc::new(MioAwaker { waker }),
         }
     }
 }
@@ -185,6 +198,10 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
 impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
     for MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
+    fn create_awaker(&self) -> Arc<dyn Awaker> {
+        self.awaker.clone()
+    }
+
     fn poll_incoming(&mut self, timeout: Duration) {
         self.cycle_count += 1;
         if let Err(e) = self.poll.poll(&mut self.event_buffer, Some(timeout)) {
@@ -246,6 +263,16 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     }
                 }
             }
+            NetOutgoing::UdpUnlisten { slot } => {
+                if let Some(slot) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Udp(socket, _, _)) = slot {
+                        if let Err(e) = self.poll.registry().deregister(socket) {
+                            log::error!("Mio deregister error {:?}", e);
+                        }
+                        *slot = None;
+                    }
+                }
+            }
             NetOutgoing::UdpPacket { to, slot, data } => {
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
@@ -274,9 +301,20 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                         *slot = None;
                     }
                 }
+                Some(SocketType::Waker()) => {}
                 None => {}
             }
         }
+    }
+}
+
+pub struct MioAwaker {
+    waker: Waker,
+}
+
+impl Awaker for MioAwaker {
+    fn awake(&self) {
+        self.waker.wake().expect("should wake mio waker");
     }
 }
 
@@ -364,9 +402,9 @@ mod tests {
         }
 
         backend.remove_owner(Owner::worker(1));
-        assert_eq!(backend.socket_count(), 1);
+        assert_eq!(backend.socket_count(), 2);
 
         backend.remove_owner(Owner::worker(2));
-        assert_eq!(backend.socket_count(), 0);
+        assert_eq!(backend.socket_count(), 1);
     }
 }

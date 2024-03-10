@@ -36,6 +36,9 @@ impl<'a> NetIncoming<'a> {
                 let data = &buf[..len];
                 Self::UdpPacket { from, slot, data }
             }
+            BackendIncoming::Awake => {
+                panic!("Unexpected awake event");
+            }
         }
     }
 }
@@ -60,6 +63,9 @@ pub enum NetOutgoing<'a> {
     UdpListen {
         addr: SocketAddr,
         reuse: bool,
+    },
+    UdpUnlisten {
+        slot: usize,
     },
     UdpPacket {
         slot: usize,
@@ -109,6 +115,7 @@ impl<'a, ChannelIn, ChannelOut, Event> TaskOutput<'a, ChannelIn, ChannelOut, Eve
         match self {
             TaskOutput::Net(net) => TaskOutput::Net(match net {
                 NetOutgoing::UdpListen { addr, reuse } => NetOutgoing::UdpListen { addr, reuse },
+                NetOutgoing::UdpUnlisten { slot } => NetOutgoing::UdpUnlisten { slot },
                 NetOutgoing::UdpPacket { slot, to, data } => {
                     NetOutgoing::UdpPacket { slot, to, data }
                 }
@@ -139,6 +146,12 @@ pub trait Task<ChannelIn, ChannelOut, EventIn, EventOut> {
 
     /// Retrieves the next output event from the task.
     fn pop_output<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelIn, ChannelOut, EventOut>>;
+
+    /// Gracefully shuts down the task.
+    fn shutdown<'a>(
         &mut self,
         now: Instant,
     ) -> Option<TaskOutput<'a, ChannelIn, ChannelOut, EventOut>>;

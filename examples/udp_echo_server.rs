@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::{
     collections::VecDeque,
     net::SocketAddr,
@@ -20,13 +22,11 @@ struct EchoWorkerCfg {
     bind: SocketAddr,
 }
 
-enum EchoWorkerInQueue {
-    UdpListen(SocketAddr),
-}
-
 struct EchoWorker {
     worker: u16,
-    output: VecDeque<EchoWorkerInQueue>,
+    backend_slot: usize,
+    output: VecDeque<WorkerInnerOutput<'static, ExtOut, ChannelId, Event, SCfg>>,
+    shutdown: bool,
 }
 
 impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
@@ -34,7 +34,15 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         log::info!("Create new echo task in addr {}", cfg.bind);
         Self {
             worker,
-            output: VecDeque::from([EchoWorkerInQueue::UdpListen(cfg.bind)]),
+            backend_slot: 0,
+            output: VecDeque::from([WorkerInnerOutput::Task(
+                Owner::worker(worker),
+                TaskOutput::Net(NetOutgoing::UdpListen {
+                    addr: cfg.bind,
+                    reuse: true,
+                }),
+            )]),
+            shutdown: false,
         }
     }
 
@@ -43,7 +51,11 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     }
 
     fn tasks(&self) -> usize {
-        1
+        if self.shutdown {
+            0
+        } else {
+            1
+        }
     }
 
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
@@ -51,12 +63,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         &mut self,
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        match self.output.pop_front()? {
-            EchoWorkerInQueue::UdpListen(addr) => Some(WorkerInnerOutput::Task(
-                Owner::worker(self.worker),
-                TaskOutput::Net(NetOutgoing::UdpListen { addr, reuse: false }),
-            )),
-        }
+        self.output.pop_front()
     }
     fn on_event<'a>(
         &mut self,
@@ -69,6 +76,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
                 TaskInput::Net(NetIncoming::UdpListenResult { bind, result }),
             ) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
+                self.backend_slot = result.expect("Should bind success").1;
                 None
             }
             WorkerInnerInput::Task(
@@ -94,7 +102,25 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
         &mut self,
         _now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        None
+        self.output.pop_front()
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+        if self.shutdown {
+            return None;
+        }
+        log::info!("EchoServer {} shutdown", self.worker);
+        self.shutdown = true;
+        self.output.push_back(WorkerInnerOutput::Task(
+            Owner::worker(self.worker),
+            TaskOutput::Net(NetOutgoing::UdpUnlisten {
+                slot: self.backend_slot,
+            }),
+        ));
+        self.output.pop_front()
     }
 }
 
@@ -113,8 +139,16 @@ fn main() {
         },
         None,
     );
-    loop {
-        controller.process();
-        std::thread::sleep(Duration::from_millis(100));
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("Should register hook");
+
+    while controller.process().is_some() {
+        if term.load(Ordering::Relaxed) {
+            controller.shutdown();
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
+
+    log::info!("Server shutdown");
 }

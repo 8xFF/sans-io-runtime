@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    backend::Backend,
+    backend::{Backend, BackendIncoming},
     bus::{
         BusEvent, BusEventSource, BusLocalHub, BusPubSubFeature, BusSendSingleFeature, BusWorker,
     },
@@ -18,6 +18,7 @@ pub enum WorkerControlIn<Ext: Clone, SCfg> {
     Ext(Ext),
     Spawn(SCfg),
     StatsRequest,
+    Shutdown,
 }
 
 #[derive(Debug)]
@@ -36,6 +37,10 @@ pub struct WorkerStats {
 impl WorkerStats {
     pub fn load(&self) -> u32 {
         self.tasks as u32
+    }
+
+    pub fn tasks(&self) -> usize {
+        self.tasks
     }
 }
 
@@ -66,6 +71,10 @@ pub trait WorkerInner<ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
         event: WorkerInnerInput<'a, ExtIn, ChannelIn, Event>,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
     fn pop_output<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
+    fn shutdown<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
@@ -110,11 +119,13 @@ impl<
         worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
         worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
     ) -> Self {
+        let backend = B::default();
+        inner_bus.set_awaker(backend.create_awaker());
         Self {
             inner,
             bus_local_hub: Default::default(),
             inner_bus,
-            backend: Default::default(),
+            backend,
             worker_out,
             worker_in,
             network_buffer: [0; 8096],
@@ -149,33 +160,16 @@ impl<
                         .send(0, true, WorkerControlOut::Stats(stats))
                         .expect("Should send success with safe flag");
                 }
-            }
-        }
-
-        while let Some((source, event)) = self.inner_bus.recv() {
-            match source {
-                BusEventSource::Channel(_, channel) => {
-                    if let Some(subscribers) = self.bus_local_hub.get_subscribers(channel) {
-                        for subscriber in subscribers {
-                            Self::on_input_event(
-                                now,
-                                WorkerInnerInput::Task(
-                                    subscriber,
-                                    TaskInput::Bus(channel, event.clone()),
-                                ),
-                                &mut self.inner,
-                                &mut self.inner_bus,
-                                &mut self.worker_out,
-                                &mut self.backend,
-                                &mut self.bus_local_hub,
-                            );
-                        }
-                    }
+                WorkerControlIn::Shutdown => {
+                    Self::on_shutdown(
+                        now,
+                        &mut self.inner,
+                        &mut self.inner_bus,
+                        &mut self.worker_out,
+                        &mut self.backend,
+                        &mut self.bus_local_hub,
+                    );
                 }
-                _ => panic!(
-                    "Invalid channel source for task {:?}, only support channel",
-                    source
-                ),
             }
         }
 
@@ -195,20 +189,21 @@ impl<
 
         self.backend.poll_incoming(remain_time);
 
-        while let Some((event, owner)) = self
-            .backend
-            .pop_incoming(&mut self.network_buffer)
-        {
-            let event = NetIncoming::from_backend(event, &self.network_buffer);
-            Self::on_input_event(
-                now,
-                WorkerInnerInput::Task(owner, TaskInput::Net(event)),
-                &mut self.inner,
-                &mut self.inner_bus,
-                &mut self.worker_out,
-                &mut self.backend,
-                &mut self.bus_local_hub,
-            );
+        while let Some((event, owner)) = self.backend.pop_incoming(&mut self.network_buffer) {
+            if let BackendIncoming::Awake = event {
+                self.on_awake(now);
+            } else {
+                let event = NetIncoming::from_backend(event, &self.network_buffer);
+                Self::on_input_event(
+                    now,
+                    WorkerInnerInput::Task(owner, TaskInput::Net(event)),
+                    &mut self.inner,
+                    &mut self.inner_bus,
+                    &mut self.worker_out,
+                    &mut self.backend,
+                    &mut self.bus_local_hub,
+                );
+            }
         }
 
         self.backend.finish_incoming_cycle();
@@ -239,6 +234,59 @@ impl<
                     backend,
                     bus_local_hub,
                 );
+            }
+        }
+    }
+
+    fn on_shutdown(
+        now: Instant,
+        inner: &mut Inner,
+        inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
+        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+        backend: &mut B,
+        bus_local_hub: &mut BusLocalHub<ChannelId>,
+    ) {
+        let worker = inner.worker_index();
+        while let Some(out) = inner.shutdown(now) {
+            Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
+            while let Some(out) = inner.pop_output(now) {
+                Self::process_inner_output(
+                    out,
+                    worker,
+                    inner_bus,
+                    worker_out,
+                    backend,
+                    bus_local_hub,
+                );
+            }
+        }
+    }
+
+    fn on_awake(&mut self, now: Instant) {
+        while let Some((source, event)) = self.inner_bus.recv() {
+            match source {
+                BusEventSource::Channel(_, channel) => {
+                    if let Some(subscribers) = self.bus_local_hub.get_subscribers(channel) {
+                        for subscriber in subscribers {
+                            Self::on_input_event(
+                                now,
+                                WorkerInnerInput::Task(
+                                    subscriber,
+                                    TaskInput::Bus(channel, event.clone()),
+                                ),
+                                &mut self.inner,
+                                &mut self.inner_bus,
+                                &mut self.worker_out,
+                                &mut self.backend,
+                                &mut self.bus_local_hub,
+                            );
+                        }
+                    }
+                }
+                _ => panic!(
+                    "Invalid channel source for task {:?}, only support channel",
+                    source
+                ),
             }
         }
     }

@@ -20,6 +20,7 @@ tiny_http = "0.12"
 str0m = "0.4.1"
 faster-stun = "1.0.2"
 convert-enum = "0.1.0"
+signal-hook = "0.3.17"
 
 [features]
 default = ["poll-backend", "mio-backend"]

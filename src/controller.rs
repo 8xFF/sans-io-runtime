@@ -10,6 +10,12 @@ use crate::{
 
 const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;
 
+enum State {
+    Running,
+    Shutdowning,
+    Shutdowned,
+}
+
 struct WorkerContainer {
     _join: std::thread::JoinHandle<()>,
     stats: WorkerStats,
@@ -29,6 +35,7 @@ pub struct Controller<
     worker_event: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
     worker_threads: Vec<WorkerContainer>,
     output: DynamicDeque<ExtOut, 16>,
+    state: State,
 }
 
 impl<ExtIn: Clone, ExtOut: Clone, SCfg, ChannelId, Event, const INNER_BUS_STACK: usize> Default
@@ -46,6 +53,7 @@ impl<ExtIn: Clone, ExtOut: Clone, SCfg, ChannelId, Event, const INNER_BUS_STACK:
             worker_event,
             worker_threads: Vec::new(),
             output: DynamicDeque::default(),
+            state: State::Running,
         }
     }
 }
@@ -94,7 +102,17 @@ impl<
         });
     }
 
-    pub fn process(&mut self) {
+    pub fn process(&mut self) -> Option<()> {
+        if matches!(self.state, State::Shutdowned) {
+            return None;
+        }
+        if matches!(self.state, State::Shutdowning) {
+            if self.worker_threads.iter().all(|w| w.stats.tasks() == 0) {
+                self.state = State::Shutdowned;
+                return None;
+            }
+        }
+
         for i in 0..self.worker_threads.len() {
             self.worker_control_bus
                 .send(i, false, WorkerControlIn::StatsRequest)
@@ -121,6 +139,8 @@ impl<
                 }
             }
         }
+
+        Some(())
     }
 
     pub fn spawn(&mut self, cfg: SCfg) {
@@ -138,6 +158,24 @@ impl<
             .send(best_worker, true, WorkerControlIn::Spawn(cfg))
         {
             log::error!("Failed to spawn task: {:?}", e);
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        match self.state {
+            State::Shutdowned | State::Shutdowning => {
+                return;
+            }
+            State::Running => {}
+        }
+        self.state = State::Shutdowning;
+        for i in 0..self.worker_threads.len() {
+            if let Err(e) = self
+                .worker_control_bus
+                .send(i, true, WorkerControlIn::Shutdown)
+            {
+                log::error!("Failed to send shutdown to task: {:?}", e);
+            }
         }
     }
 

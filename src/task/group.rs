@@ -68,7 +68,8 @@ impl<
 
     /// Returns the number of tasks in the group.
     pub fn tasks(&self) -> usize {
-        self.tasks.len()
+        //count all task which not None
+        self.tasks.iter().filter(|x| x.is_some()).count()
     }
 
     /// Adds a task to the group.
@@ -170,9 +171,45 @@ impl<
         Some(TaskGroupOutput(owner, out))
     }
 
+    /// Gracefully destroys the task group.
+    pub fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
+        let mut index = self.next_tick_index.unwrap_or(0);
+        while index < self.tasks.len() {
+            let task = match self.tasks.get_mut_or_panic(index) {
+                Some(task) => task,
+                None => {
+                    index += 1;
+                    continue;
+                }
+            };
+            self.last_input_index = Some(index);
+            self.next_tick_index = Some(index + 1);
+            if let Some(out) = task.shutdown(now) {
+                if let TaskOutput::Destroy = out {
+                    self.destroy_list.push_safe(index);
+                }
+                let owner = Owner::task(self.worker, T::TYPE, index);
+                return Some(TaskGroupOutput(owner, out));
+            } else {
+                index += 1;
+            }
+        }
+
+        self.next_tick_index = None;
+        self.last_input_index = None;
+
+        None
+    }
+
     fn clear_destroyed_task(&mut self) {
         while let Some(index) = self.destroy_list.pop() {
             self.tasks.get_mut_or_panic(index).take();
+        }
+        while let Some(None) = self.tasks.last() {
+            self.tasks.pop();
         }
     }
 }

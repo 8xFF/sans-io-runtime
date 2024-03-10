@@ -1,5 +1,9 @@
 use std::{
     net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -64,7 +68,7 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask
         &mut self,
         _now: Instant,
     ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
-        None
+        self.output.pop_front()
     }
 
     fn on_event<'b>(
@@ -111,6 +115,22 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask
         &mut self,
         _now: Instant,
     ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
+        self.output.pop_front()
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
+        log::info!("EchoTask {} shutdown", FAKE_TYPE);
+        self.output
+            .push_back(TaskOutput::Net(NetOutgoing::UdpUnlisten {
+                slot: self.local_backend_slot,
+            }))
+            .print_err2("should not hapended");
+        self.output
+            .push_back(TaskOutput::Destroy)
+            .print_err2("should not hapended");
         self.output.pop_front()
     }
 }
@@ -212,6 +232,28 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
             _ => unreachable!(),
         }
     }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+        let gs = &mut self.group_state;
+        loop {
+            match gs.current()? {
+                0 => {
+                    if let Some(e) = gs.process(self.echo_type1.shutdown(now)) {
+                        return Some(e.into());
+                    }
+                }
+                1 => {
+                    if let Some(e) = gs.process(self.echo_type2.shutdown(now)) {
+                        return Some(e.into());
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
 }
 
 fn main() {
@@ -222,7 +264,7 @@ fn main() {
     controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
     controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
 
-    for _i in 0..100 {
+    for _i in 0..2 {
         controller.spawn(EchoTaskMultiCfg::Type1(EchoTaskCfg {
             count: 1000,
             brust_size: 1,
@@ -234,8 +276,17 @@ fn main() {
             dest: SocketAddr::from(([127, 0, 0, 1], 10002)),
         }));
     }
-    loop {
-        controller.process();
-        std::thread::sleep(Duration::from_millis(100));
+
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("Should register hook");
+
+    while controller.process().is_some() {
+        if term.load(Ordering::Relaxed) {
+            controller.shutdown();
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
+
+    log::info!("Server shutdown");
 }

@@ -371,6 +371,38 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             _ => None,
         }
     }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
+        let gs = &mut self.groups_output;
+        loop {
+            match gs.current()? {
+                WhipTask::TYPE => {
+                    if let Some(res) = gs.process(self.whip_group.shutdown(now)) {
+                        if matches!(res.1, TaskOutput::Destroy) {
+                            self.shared_udp.remove_task(TaskId::Whip(
+                                res.0.task_index().expect("Should have task"),
+                            ));
+                        }
+                        return Some(res.into());
+                    }
+                }
+                WhepTask::TYPE => {
+                    if let Some(res) = gs.process(self.whep_group.shutdown(now)) {
+                        if matches!(res.1, TaskOutput::Destroy) {
+                            self.shared_udp.remove_task(TaskId::Whip(
+                                res.0.task_index().expect("Should have task"),
+                            ));
+                        }
+                        return Some(res.into());
+                    }
+                }
+                _ => panic!("Unknown task type"),
+            }
+        }
+    }
 }
 
 impl TrackMedia {

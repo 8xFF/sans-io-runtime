@@ -235,4 +235,17 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
     ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
         self.pop_event_inner(now, false)
     }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
+        self.rtc.disconnect();
+        self.output
+            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(
+                ChannelId::PublishVideo(self.channel_id),
+            )));
+        self.output.push_back_safe(TaskOutput::Destroy);
+        self.pop_event_inner(now, true)
+    }
 }

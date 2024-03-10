@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::{owner::Owner, task::NetOutgoing};
 
@@ -26,9 +26,15 @@ pub enum BackendIncoming {
         from: SocketAddr,
         len: usize,
     },
+    Awake,
+}
+
+pub trait Awaker: Send + Sync {
+    fn awake(&self);
 }
 
 pub trait Backend: Default + BackendOwner {
+    fn create_awaker(&self) -> Arc<dyn Awaker>;
     fn poll_incoming(&mut self, timeout: Duration);
     fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)>;
     fn finish_outgoing_cycle(&mut self);

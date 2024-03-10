@@ -30,6 +30,9 @@
 //!         BackendIncoming::UdpListenResult { bind, result } => {
 //!             // Handle UDP listen result
 //!         }
+//!         BackendIncoming::Awake => {
+//!             // Handle awake event
+//!         }
 //!     }
 //! }
 //!
@@ -44,8 +47,13 @@
 //! ```
 //!
 //! Note: This module assumes that the sans-io-runtime crate and the Poll library are already imported and available.
-use std::{net::{SocketAddr, UdpSocket}, time::Duration, usize};
 use socket2::{Domain, Protocol, Socket, Type};
+use std::{
+    net::{SocketAddr, UdpSocket},
+    sync::Arc,
+    time::Duration,
+    usize,
+};
 
 use crate::{
     backend::BackendOwner,
@@ -54,7 +62,7 @@ use crate::{
     NetOutgoing,
 };
 
-use super::{Backend, BackendIncoming};
+use super::{Awaker, Backend, BackendIncoming};
 
 enum SocketType {
     Udp(UdpSocket, SocketAddr, Owner),
@@ -128,11 +136,18 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
 impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
     for PollBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
+    fn create_awaker(&self) -> Arc<dyn Awaker> {
+        Arc::new(PollAwaker)
+    }
+
     fn poll_incoming(&mut self, timeout: Duration) {
         if !self.output.is_empty() {
             return;
         }
         self.cycle_count += 1;
+        // We need manual awake for now
+        self.output
+            .push_back_safe((BackendIncoming::Awake, Owner::worker(0)));
         std::thread::sleep(timeout);
     }
 
@@ -159,7 +174,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
                     }
                 }
             }
-            
+
             if last_poll_socket == self.sockets.len() - 1 {
                 break;
             } else {
@@ -186,19 +201,32 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     Ok(socket) => {
                         let local_addr = socket.local_addr().expect("should access udp local_addr");
                         let slot = self.select_slot();
-                        self.output.push_back_safe((BackendIncoming::UdpListenResult {
-                            bind: addr,
-                            result: Ok((local_addr, slot)),
-                        }, owner));
+                        self.output.push_back_safe((
+                            BackendIncoming::UdpListenResult {
+                                bind: addr,
+                                result: Ok((local_addr, slot)),
+                            },
+                            owner,
+                        ));
                         *self.sockets.get_mut_or_panic(slot) =
                             Some(SocketType::Udp(socket, local_addr, owner));
                     }
                     Err(e) => {
                         log::error!("Poll bind error {:?}", e);
-                        self.output.push_back_safe((BackendIncoming::UdpListenResult {
-                            bind: addr,
-                            result: Err(e),
-                        }, owner));
+                        self.output.push_back_safe((
+                            BackendIncoming::UdpListenResult {
+                                bind: addr,
+                                result: Err(e),
+                            },
+                            owner,
+                        ));
+                    }
+                }
+            }
+            NetOutgoing::UdpUnlisten { slot } => {
+                if let Some(slot) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Udp(socket, _, _)) = slot {
+                        *slot = None;
                     }
                 }
             }
@@ -230,6 +258,14 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                 None => {}
             }
         }
+    }
+}
+
+pub struct PollAwaker;
+
+impl Awaker for PollAwaker {
+    fn awake(&self) {
+        //do nothing
     }
 }
 
@@ -307,6 +343,11 @@ mod tests {
         );
 
         backend.poll_incoming(Duration::from_secs(1));
+        match backend.pop_incoming(&mut buf) {
+            Some((BackendIncoming::Awake, owner)) => {}
+            _ => panic!("Expected Awake"),
+        }
+
         match backend.pop_incoming(&mut buf) {
             Some((BackendIncoming::UdpPacket { from, slot, len }, owner)) => {
                 assert_eq!(owner, Owner::worker(2));

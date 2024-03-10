@@ -1,4 +1,10 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use sans_io_runtime::{backend::MioBackend, Controller};
 use sfu::{ChannelId, ExtIn, ExtOut, ICfg, SCfg, SfuEvent, SfuWorker};
@@ -26,8 +32,17 @@ fn main() {
         None,
     );
 
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("Should register hook");
+
     while let Ok(req) = server.recv(Duration::from_micros(100)) {
-        controller.process();
+        if controller.process().is_none() {
+            break;
+        }
+        if term.load(Ordering::Relaxed) {
+            controller.shutdown();
+        }
         while let Some(ext) = controller.pop_event() {
             match ext {
                 ExtOut::HttpResponse(resp) => {
@@ -39,4 +54,6 @@ fn main() {
             controller.spawn(SCfg::HttpRequest(req));
         }
     }
+
+    log::info!("Server shutdown");
 }
