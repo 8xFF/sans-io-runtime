@@ -51,6 +51,8 @@ use std::{net::SocketAddr, sync::Arc, time::Duration, usize};
 
 use mio::{net::UdpSocket, Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
+#[cfg(feature = "tun-tap")]
+use std::io::{Read, Write};
 
 use crate::{
     backend::BackendOwner,
@@ -67,6 +69,8 @@ enum SocketType {
     Waker(),
     #[cfg(feature = "udp")]
     Udp(UdpSocket, SocketAddr, Owner),
+    #[cfg(feature = "tun-tap")]
+    Tun(super::tun::TunFd, Owner),
 }
 
 pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
@@ -152,7 +156,22 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
                         return Some((BackendIncoming::Awake, Owner::worker(0)));
                         //TODO dont use 0
                     }
-                    _ => {
+                    #[cfg(feature = "tun-tap")]
+                    Some(Some(SocketType::Tun(fd, owner))) => {
+                        if fd.read {
+                            if let Ok(size) = fd.fd.read(buf) {
+                                return Some((
+                                    BackendIncoming::TunPacket {
+                                        slot: slot_index,
+                                        len: size,
+                                    },
+                                    *owner,
+                                ));
+                            }
+                        }
+                        self.event_buffer2.pop_front();
+                    }
+                    Some(None) | None => {
                         self.event_buffer2.pop_front();
                     }
                 }
@@ -226,7 +245,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                         if let Err(e) = self.poll.registry().register(
                             &mut socket,
                             Token(slot),
-                            Interest::READABLE | Interest::WRITABLE,
+                            Interest::READABLE,
                         ) {
                             log::error!("Mio register error {:?}", e);
                             return;
@@ -280,11 +299,60 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                 }
             }
             #[cfg(feature = "tun-tap")]
-            NetOutgoing::TunBind { name } => {}
+            NetOutgoing::TunBind { fd } => {
+                use mio::unix::SourceFd;
+                use std::os::unix::io::AsRawFd;
+
+                let slot = self.select_slot();
+                if fd.read {
+                    if let Err(e) = self.poll.registry().register(
+                        &mut SourceFd(&fd.fd.as_raw_fd()),
+                        Token(slot),
+                        Interest::READABLE,
+                    ) {
+                        log::error!("Mio register error {:?}", e);
+                        return;
+                    }
+                }
+
+                self.output
+                    .push_back_safe((BackendIncoming::TunBindResult { result: Ok(slot) }, owner));
+                *self.sockets.get_mut_or_panic(slot) = Some(SocketType::Tun(fd, owner));
+            }
             #[cfg(feature = "tun-tap")]
-            NetOutgoing::TunUnbind { slot } => {}
+            NetOutgoing::TunUnbind { slot } => {
+                use mio::unix::SourceFd;
+                use std::os::unix::io::AsRawFd;
+
+                if let Some(slot) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Tun(fd, _)) = slot {
+                        if fd.read {
+                            if let Err(e) = self
+                                .poll
+                                .registry()
+                                .deregister(&mut SourceFd(&fd.fd.as_raw_fd()))
+                            {
+                                log::error!("Mio register error {:?}", e);
+                            }
+                        }
+                        *slot = None;
+                    }
+                }
+            }
             #[cfg(feature = "tun-tap")]
-            NetOutgoing::TunPacket { slot, data } => {}
+            NetOutgoing::TunPacket { slot, data } => {
+                if let Some(socket) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Tun(fd, _)) = socket {
+                        if let Err(e) = fd.fd.write_all(&data) {
+                            log::error!("Poll write_all error {:?}", e);
+                        }
+                    } else {
+                        log::error!("Poll send_to error: no tun for {}", slot);
+                    }
+                } else {
+                    log::error!("Poll send_to error: no tun for {}", slot);
+                }
+            }
         }
     }
 
@@ -296,6 +364,22 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                 Some(SocketType::Udp(socket, _, owner2)) => {
                     if *owner2 == owner {
                         if let Err(e) = self.poll.registry().deregister(socket) {
+                            log::error!("Mio deregister error {:?}", e);
+                        }
+                        *slot = None;
+                    }
+                }
+                #[cfg(feature = "tun-tap")]
+                Some(SocketType::Tun(fd, owner2)) => {
+                    use mio::unix::SourceFd;
+                    use std::os::unix::io::AsRawFd;
+
+                    if *owner2 == owner {
+                        if let Err(e) = self
+                            .poll
+                            .registry()
+                            .deregister(&mut SourceFd(&fd.fd.as_raw_fd()))
+                        {
                             log::error!("Mio deregister error {:?}", e);
                         }
                         *slot = None;

@@ -25,7 +25,7 @@ signal-hook = "0.3.17"
 
 [features]
 default = ["poll-backend", "mio-backend", "udp"]
-tun-tap = ["tun"]
+tun-tap = ["tun", "mio/os-ext"]
 udp = []
 mio-backend = ["mio", "socket2"]
 poll-backend = ["socket2"]

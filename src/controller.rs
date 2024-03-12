@@ -114,9 +114,12 @@ impl<
         }
 
         for i in 0..self.worker_threads.len() {
-            self.worker_control_bus
+            if let Err(e) = self
+                .worker_control_bus
                 .send(i, false, WorkerControlIn::StatsRequest)
-                .print_err("Query worker stats full");
+            {
+                log::error!("Failed to send stats request to worker {i}: {:?}", e);
+            }
         }
         while let Some((source, event)) = self.worker_event.recv() {
             match (source, event) {
