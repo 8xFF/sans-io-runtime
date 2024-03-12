@@ -49,6 +49,7 @@
 //! Note: This module assumes that the sans-io-runtime crate and the Poll library are already imported and available.
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
+    io::Read,
     net::{SocketAddr, UdpSocket},
     sync::Arc,
     time::Duration,
@@ -64,8 +65,14 @@ use crate::{
 
 use super::{Awaker, Backend, BackendIncoming};
 
+#[cfg(feature = "tun-tap")]
+use std::io::Write;
+
 enum SocketType {
+    #[cfg(feature = "udp")]
     Udp(UdpSocket, SocketAddr, Owner),
+    #[cfg(feature = "tun-tap")]
+    Tun(super::tun::TunFd, Owner),
 }
 
 pub struct PollBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
@@ -78,6 +85,7 @@ pub struct PollBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: u
 impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
     PollBackend<SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
 {
+    #[cfg(feature = "udp")]
     fn create_udp(addr: SocketAddr, reuse: bool) -> Result<UdpSocket, std::io::Error> {
         let socket = match addr {
             SocketAddr::V4(addr) => {
@@ -160,7 +168,8 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
         loop {
             if let Some(Some(slot)) = self.sockets.get_mut(last_poll_socket) {
                 match slot {
-                    SocketType::Udp(socket, addr, owner) => {
+                    #[cfg(feature = "udp")]
+                    SocketType::Udp(socket, _addr, owner) => {
                         if let Ok((size, remote)) = socket.recv_from(buf) {
                             return Some((
                                 BackendIncoming::UdpPacket {
@@ -170,6 +179,20 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
                                 },
                                 *owner,
                             ));
+                        }
+                    }
+                    #[cfg(feature = "tun-tap")]
+                    SocketType::Tun(fd, owner) => {
+                        if fd.read {
+                            if let Ok(size) = fd.fd.read(buf) {
+                                return Some((
+                                    BackendIncoming::TunPacket {
+                                        slot: last_poll_socket,
+                                        len: size,
+                                    },
+                                    *owner,
+                                ));
+                            }
                         }
                     }
                 }
@@ -195,6 +218,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
 {
     fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
+            #[cfg(feature = "udp")]
             NetOutgoing::UdpListen { addr, reuse } => {
                 log::info!("PollBackend: UdpListen {addr}, reuse: {reuse}");
                 match Self::create_udp(addr, reuse) {
@@ -223,13 +247,15 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     }
                 }
             }
+            #[cfg(feature = "udp")]
             NetOutgoing::UdpUnlisten { slot } => {
                 if let Some(slot) = self.sockets.get_mut(slot) {
-                    if let Some(SocketType::Udp(socket, _, _)) = slot {
+                    if let Some(SocketType::Udp(_socket, _, _)) = slot {
                         *slot = None;
                     }
                 }
             }
+            #[cfg(feature = "udp")]
             NetOutgoing::UdpPacket { to, slot, data } => {
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
@@ -237,10 +263,39 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                             log::error!("Poll send_to error {:?}", e);
                         }
                     } else {
-                        log::error!("Poll send_to error: no socket for {:?}", to);
+                        log::error!("Poll send_to error: no socket for {}", slot);
                     }
                 } else {
-                    log::error!("Poll send_to error: no socket for {:?}", to);
+                    log::error!("Poll send_to error: no socket for {}", slot);
+                }
+            }
+            #[cfg(feature = "tun-tap")]
+            NetOutgoing::TunBind { fd } => {
+                let slot = self.select_slot();
+                self.output
+                    .push_back_safe((BackendIncoming::TunBindResult { result: Ok(slot) }, owner));
+                *self.sockets.get_mut_or_panic(slot) = Some(SocketType::Tun(fd, owner));
+            }
+            #[cfg(feature = "tun-tap")]
+            NetOutgoing::TunUnbind { slot } => {
+                if let Some(slot) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Tun(_, _)) = slot {
+                        *slot = None;
+                    }
+                }
+            }
+            #[cfg(feature = "tun-tap")]
+            NetOutgoing::TunPacket { slot, data } => {
+                if let Some(socket) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Tun(fd, _)) = socket {
+                        if let Err(e) = fd.fd.write_all(&data) {
+                            log::error!("Poll write_all error {:?}", e);
+                        }
+                    } else {
+                        log::error!("Poll send_to error: no tun for {}", slot);
+                    }
+                } else {
+                    log::error!("Poll send_to error: no tun for {}", slot);
                 }
             }
         }
@@ -250,7 +305,14 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
     fn remove_owner(&mut self, owner: Owner) {
         for slot in self.sockets.iter_mut() {
             match slot {
-                Some(SocketType::Udp(socket, _, owner2)) => {
+                #[cfg(feature = "udp")]
+                Some(SocketType::Udp(_socket, _, owner2)) => {
+                    if *owner2 == owner {
+                        *slot = None;
+                    }
+                }
+                #[cfg(feature = "tun-tap")]
+                Some(SocketType::Tun(_fd, owner2)) => {
                     if *owner2 == owner {
                         *slot = None;
                     }
@@ -282,6 +344,7 @@ mod tests {
     use super::PollBackend;
 
     #[allow(unused_assignments)]
+    #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
         let mut backend = PollBackend::<2, 2>::default();
@@ -344,7 +407,7 @@ mod tests {
 
         backend.poll_incoming(Duration::from_secs(1));
         match backend.pop_incoming(&mut buf) {
-            Some((BackendIncoming::Awake, owner)) => {}
+            Some((BackendIncoming::Awake, _owner)) => {}
             _ => panic!("Expected Awake"),
         }
 

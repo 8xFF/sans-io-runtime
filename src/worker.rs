@@ -193,7 +193,7 @@ impl<
             if let BackendIncoming::Awake = event {
                 self.on_awake(now);
             } else {
-                let event = NetIncoming::from_backend(event, &self.network_buffer);
+                let event = NetIncoming::from_backend(event, &mut self.network_buffer);
                 Self::on_input_event(
                     now,
                     WorkerInnerInput::Task(owner, TaskInput::Net(event)),

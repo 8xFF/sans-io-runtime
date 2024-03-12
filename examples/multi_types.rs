@@ -7,7 +7,7 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::MioBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutputsState,
+    backend::PollBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutputsState,
     TaskInput, TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
@@ -296,8 +296,8 @@ fn main() {
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
         Controller::<TestExtIn, TestExtOut, TestSCfg, TestChannel, TestEvent, 1024>::default();
-    controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
-    controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>((), None);
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>((), None);
 
     for _i in 0..10 {
         controller.spawn(TestSCfg::Type1(Type1Cfg {}));

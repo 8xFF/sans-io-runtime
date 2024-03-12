@@ -1,3 +1,5 @@
+#[cfg(feature = "tun-tap")]
+use crate::backend::tun::TunFd;
 /// Task system for handling network and bus events.
 ///
 /// Each task is a separate state machine that can receive network and bus events, and produce output events.
@@ -5,7 +7,10 @@
 /// The worker is responsible for dispatching network and bus events to the appropriate task group, and for
 /// processing the task groups.
 ///
-use std::{net::SocketAddr, ops::Deref, time::Instant};
+#[cfg(feature = "udp")]
+use std::net::SocketAddr;
+
+use std::{ops::Deref, time::Instant};
 
 use crate::{backend::BackendIncoming, bus::BusEvent};
 
@@ -15,26 +20,43 @@ pub mod group_state;
 /// Represents an incoming network event.
 #[derive(Debug)]
 pub enum NetIncoming<'a> {
+    #[cfg(feature = "udp")]
     UdpListenResult {
         bind: SocketAddr,
         result: Result<(SocketAddr, usize), std::io::Error>,
     },
+    #[cfg(feature = "udp")]
     UdpPacket {
         slot: usize,
         from: SocketAddr,
-        data: &'a [u8],
+        data: &'a mut [u8],
     },
+    #[cfg(feature = "tun-tap")]
+    TunBindResult {
+        result: Result<usize, std::io::Error>,
+    },
+    #[cfg(feature = "tun-tap")]
+    TunPacket { slot: usize, data: &'a mut [u8] },
 }
 
 impl<'a> NetIncoming<'a> {
-    pub fn from_backend(event: BackendIncoming, buf: &'a [u8]) -> Self {
+    pub fn from_backend(event: BackendIncoming, buf: &'a mut [u8]) -> Self {
         match event {
+            #[cfg(feature = "udp")]
             BackendIncoming::UdpListenResult { bind, result } => {
                 Self::UdpListenResult { bind, result }
             }
+            #[cfg(feature = "udp")]
             BackendIncoming::UdpPacket { from, slot, len } => {
-                let data = &buf[..len];
+                let data = &mut buf[..len];
                 Self::UdpPacket { from, slot, data }
+            }
+            #[cfg(feature = "tun-tap")]
+            BackendIncoming::TunBindResult { result } => Self::TunBindResult { result },
+            #[cfg(feature = "tun-tap")]
+            BackendIncoming::TunPacket { slot, len } => {
+                let data = &mut buf[..len];
+                Self::TunPacket { slot, data }
             }
             BackendIncoming::Awake => {
                 panic!("Unexpected awake event");
@@ -43,6 +65,7 @@ impl<'a> NetIncoming<'a> {
     }
 }
 
+#[derive(Debug)]
 pub enum Buffer<'a> {
     Ref(&'a [u8]),
     Vec(Vec<u8>),
@@ -59,19 +82,24 @@ impl<'a> Deref for Buffer<'a> {
 }
 
 /// Represents an outgoing network event.
+#[derive(Debug)]
 pub enum NetOutgoing<'a> {
-    UdpListen {
-        addr: SocketAddr,
-        reuse: bool,
-    },
-    UdpUnlisten {
-        slot: usize,
-    },
+    #[cfg(feature = "udp")]
+    UdpListen { addr: SocketAddr, reuse: bool },
+    #[cfg(feature = "udp")]
+    UdpUnlisten { slot: usize },
+    #[cfg(feature = "udp")]
     UdpPacket {
         slot: usize,
         to: SocketAddr,
         data: Buffer<'a>,
     },
+    #[cfg(feature = "tun-tap")]
+    TunBind { fd: TunFd },
+    #[cfg(feature = "tun-tap")]
+    TunUnbind { slot: usize },
+    #[cfg(feature = "tun-tap")]
+    TunPacket { slot: usize, data: Buffer<'a> },
 }
 
 /// Represents an input event for a task.
@@ -98,6 +126,7 @@ impl<'a, ChannelId, Event> TaskInput<'a, ChannelId, Event> {
 }
 
 /// Represents an output event for a task.
+#[derive(Debug)]
 pub enum TaskOutput<'a, ChannelIn, ChannelOut, Event> {
     Net(NetOutgoing<'a>),
     Bus(BusEvent<ChannelIn, ChannelOut, Event>),
@@ -114,11 +143,20 @@ impl<'a, ChannelIn, ChannelOut, Event> TaskOutput<'a, ChannelIn, ChannelOut, Eve
     ) -> TaskOutput<'a, NChannelIn, NChannelOut, NEvent> {
         match self {
             TaskOutput::Net(net) => TaskOutput::Net(match net {
+                #[cfg(feature = "udp")]
                 NetOutgoing::UdpListen { addr, reuse } => NetOutgoing::UdpListen { addr, reuse },
+                #[cfg(feature = "udp")]
                 NetOutgoing::UdpUnlisten { slot } => NetOutgoing::UdpUnlisten { slot },
+                #[cfg(feature = "udp")]
                 NetOutgoing::UdpPacket { slot, to, data } => {
                     NetOutgoing::UdpPacket { slot, to, data }
                 }
+                #[cfg(feature = "tun-tap")]
+                NetOutgoing::TunBind { fd } => NetOutgoing::TunBind { fd },
+                #[cfg(feature = "tun-tap")]
+                NetOutgoing::TunUnbind { slot } => NetOutgoing::TunUnbind { slot },
+                #[cfg(feature = "tun-tap")]
+                NetOutgoing::TunPacket { slot, data } => NetOutgoing::TunPacket { slot, data },
             }),
             TaskOutput::Bus(event) => TaskOutput::Bus(event.convert_into()),
             TaskOutput::Destroy => TaskOutput::Destroy,

@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use sans_io_runtime::{backend::MioBackend, Controller};
+use sans_io_runtime::{backend::PollBackend, Controller};
 use sfu::{ChannelId, ExtIn, ExtOut, ICfg, SCfg, SfuEvent, SfuWorker};
 mod http;
 mod sfu;
@@ -19,13 +19,13 @@ fn main() {
 
     let mut server = http::SimpleHttpServer::new(8080);
     let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, SfuEvent, 128>::default();
-    controller.add_worker::<_, SfuWorker, MioBackend<128, 512>>(
+    controller.add_worker::<_, SfuWorker, PollBackend<128, 512>>(
         ICfg {
             udp_addr: "192.168.1.39:0".parse().unwrap(),
         },
         None,
     );
-    controller.add_worker::<_, SfuWorker, MioBackend<128, 512>>(
+    controller.add_worker::<_, SfuWorker, PollBackend<128, 512>>(
         ICfg {
             udp_addr: "192.168.1.39:0".parse().unwrap(),
         },

@@ -65,16 +65,8 @@ const QUEUE_PKT_NUM: usize = 512;
 
 enum SocketType {
     Waker(),
+    #[cfg(feature = "udp")]
     Udp(UdpSocket, SocketAddr, Owner),
-}
-
-#[derive(Debug)]
-enum InQueue<Owner> {
-    UdpListenResult {
-        owner: Owner,
-        bind: SocketAddr,
-        result: Result<(SocketAddr, usize), std::io::Error>,
-    },
 }
 
 pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
@@ -82,7 +74,7 @@ pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: us
     event_buffer: Events,
     event_buffer2: heapless::Deque<Token, QUEUE_PKT_NUM>,
     sockets: DynamicVec<Option<SocketType>, SOCKET_STACK_SIZE>,
-    output: DynamicDeque<InQueue<Owner>, QUEUE_STACK_SIZE>,
+    output: DynamicDeque<(BackendIncoming, Owner), QUEUE_STACK_SIZE>,
     cycle_count: u64,
     awaker: Arc<MioAwaker>,
 }
@@ -90,6 +82,7 @@ pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: us
 impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
     MioBackend<SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
 {
+    #[cfg(feature = "udp")]
     fn create_udp(addr: SocketAddr, reuse: bool) -> Result<UdpSocket, std::io::Error> {
         let socket = match addr {
             SocketAddr::V4(addr) => {
@@ -132,20 +125,13 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
     }
     fn pop_cached_event(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
         if let Some(wait) = self.output.pop_front() {
-            match wait {
-                InQueue::UdpListenResult {
-                    owner,
-                    bind,
-                    result,
-                } => {
-                    return Some((BackendIncoming::UdpListenResult { bind, result }, owner));
-                }
-            }
+            return Some(wait);
         }
         while !self.event_buffer2.is_empty() {
             if let Some(token) = self.event_buffer2.front() {
                 let slot_index = token.0;
                 match self.sockets.get_mut(slot_index) {
+                    #[cfg(feature = "udp")]
                     Some(Some(SocketType::Udp(socket, _, owner))) => {
                         self.event_buffer2.pop_front();
                         if let Ok((buffer_size, addr)) = socket.recv_from(buf) {
@@ -230,6 +216,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
 {
     fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
+            #[cfg(feature = "udp")]
             NetOutgoing::UdpListen { addr, reuse } => {
                 log::info!("MioBackend: UdpListen {addr}, reuse: {reuse}");
                 match Self::create_udp(addr, reuse) {
@@ -239,30 +226,35 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                         if let Err(e) = self.poll.registry().register(
                             &mut socket,
                             Token(slot),
-                            Interest::READABLE,
+                            Interest::READABLE | Interest::WRITABLE,
                         ) {
                             log::error!("Mio register error {:?}", e);
                             return;
                         }
 
-                        self.output.push_back_safe(InQueue::UdpListenResult {
+                        self.output.push_back_safe((
+                            BackendIncoming::UdpListenResult {
+                                bind: addr,
+                                result: Ok((local_addr, slot)),
+                            },
                             owner,
-                            bind: addr,
-                            result: Ok((local_addr, slot)),
-                        });
+                        ));
                         *self.sockets.get_mut_or_panic(slot) =
                             Some(SocketType::Udp(socket, local_addr, owner));
                     }
                     Err(e) => {
                         log::error!("Mio bind error {:?}", e);
-                        self.output.push_back_safe(InQueue::UdpListenResult {
+                        self.output.push_back_safe((
+                            BackendIncoming::UdpListenResult {
+                                bind: addr,
+                                result: Err(e),
+                            },
                             owner,
-                            bind: addr,
-                            result: Err(e),
-                        });
+                        ));
                     }
                 }
             }
+            #[cfg(feature = "udp")]
             NetOutgoing::UdpUnlisten { slot } => {
                 if let Some(slot) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = slot {
@@ -273,6 +265,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     }
                 }
             }
+            #[cfg(feature = "udp")]
             NetOutgoing::UdpPacket { to, slot, data } => {
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
@@ -286,6 +279,12 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     log::error!("Mio send_to error: no socket for {:?}", to);
                 }
             }
+            #[cfg(feature = "tun-tap")]
+            NetOutgoing::TunBind { name } => {}
+            #[cfg(feature = "tun-tap")]
+            NetOutgoing::TunUnbind { slot } => {}
+            #[cfg(feature = "tun-tap")]
+            NetOutgoing::TunPacket { slot, data } => {}
         }
     }
 
@@ -293,6 +292,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
     fn remove_owner(&mut self, owner: Owner) {
         for slot in self.sockets.iter_mut() {
             match slot {
+                #[cfg(feature = "udp")]
                 Some(SocketType::Udp(socket, _, owner2)) => {
                     if *owner2 == owner {
                         if let Err(e) = self.poll.registry().deregister(socket) {
@@ -331,6 +331,7 @@ mod tests {
     use super::MioBackend;
 
     #[allow(unused_assignments)]
+    #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
         let mut backend = MioBackend::<2, 2>::default();

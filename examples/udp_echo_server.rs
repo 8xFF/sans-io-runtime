@@ -7,7 +7,7 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::MioBackend, Buffer, Controller, NetIncoming, NetOutgoing, Owner, TaskInput,
+    backend::PollBackend, Buffer, Controller, NetIncoming, NetOutgoing, Owner, TaskInput,
     TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
@@ -127,13 +127,13 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
 fn main() {
     env_logger::init();
     let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::default();
-    controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
+    controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(
         EchoWorkerCfg {
             bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
         },
         None,
     );
-    controller.add_worker::<_, EchoWorker, MioBackend<16, 1024>>(
+    controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(
         EchoWorkerCfg {
             bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
         },

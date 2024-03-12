@@ -9,6 +9,7 @@ pub use local_hub::*;
 
 use crate::backend::Awaker;
 
+#[derive(Debug)]
 pub enum BusEvent<ChannelIn, ChannelOut, MSG> {
     ChannelSubscribe(ChannelIn),
     ChannelUnsubscribe(ChannelIn),
