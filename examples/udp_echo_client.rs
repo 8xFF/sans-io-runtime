@@ -120,7 +120,7 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask
 
     fn shutdown<'a>(
         &mut self,
-        now: Instant,
+        _now: Instant,
     ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
         log::info!("EchoTask {} shutdown", FAKE_TYPE);
         self.output

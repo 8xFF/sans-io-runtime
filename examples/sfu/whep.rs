@@ -194,7 +194,11 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhepTask {
     ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
         match input {
             TaskInput::Net(event) => match event {
-                NetIncoming::UdpPacket { from, slot, data } => {
+                NetIncoming::UdpPacket {
+                    from,
+                    slot: _,
+                    data,
+                } => {
                     if let Err(e) = self.rtc.handle_input(Input::Receive(
                         now,
                         Receive::new(Protocol::Udp, from, self.backend_addr, data)

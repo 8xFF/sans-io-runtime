@@ -49,7 +49,6 @@
 //! Note: This module assumes that the sans-io-runtime crate and the Poll library are already imported and available.
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
-    io::Read,
     net::{SocketAddr, UdpSocket},
     sync::Arc,
     time::Duration,
@@ -112,7 +111,7 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
         Ok(socket.into())
     }
 
-    fn socket_count(&self) -> usize {
+    pub fn socket_count(&self) -> usize {
         self.sockets.iter().filter(|s| s.is_some()).count()
     }
 

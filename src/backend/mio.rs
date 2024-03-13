@@ -113,7 +113,7 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
         Ok(UdpSocket::from_std(socket.into()))
     }
 
-    fn socket_count(&self) -> usize {
+    pub fn socket_count(&self) -> usize {
         self.sockets.iter().filter(|s| s.is_some()).count()
     }
 

@@ -5,7 +5,7 @@ use crate::{
     bus::{BusEventSource, BusSendSingleFeature, BusSystemBuilder, BusWorker},
     collections::DynamicDeque,
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
-    ErrorDebugger, Owner,
+    Owner,
 };
 
 const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;

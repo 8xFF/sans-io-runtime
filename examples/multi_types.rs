@@ -26,24 +26,16 @@ enum Type1ExtOut {}
 enum Type2ExtOut {}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-enum Type1Channel {
-    A,
-}
+enum Type1Channel {}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-enum Type2Channel {
-    B,
-}
+enum Type2Channel {}
 
 #[derive(Clone)]
-enum Type1Event {
-    A,
-}
+enum Type1Event {}
 
 #[derive(Clone)]
-enum Type2Event {
-    B,
-}
+enum Type2Event {}
 
 #[derive(Debug, Clone)]
 struct Type1Cfg {}
@@ -83,12 +75,12 @@ enum TestEvent {
 
 #[derive(Debug)]
 struct Task1 {
-    cfg: Type1Cfg,
+    _cfg: Type1Cfg,
 }
 
 impl Task1 {
     fn new(cfg: Type1Cfg) -> Self {
-        Self { cfg }
+        Self { _cfg: cfg }
     }
 }
 
@@ -119,7 +111,7 @@ impl Task<Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
 
     fn shutdown<'a>(
         &mut self,
-        now: Instant,
+        _now: Instant,
     ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
         Some(TaskOutput::Destroy)
     }
@@ -127,12 +119,12 @@ impl Task<Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
 
 #[derive(Debug)]
 struct Task2 {
-    cfg: Type2Cfg,
+    _cfg: Type2Cfg,
 }
 
 impl Task2 {
     fn new(cfg: Type2Cfg) -> Self {
-        Self { cfg }
+        Self { _cfg: cfg }
     }
 }
 
@@ -163,7 +155,7 @@ impl Task<Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
 
     fn shutdown<'a>(
         &mut self,
-        now: Instant,
+        _now: Instant,
     ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
         log::info!("received shutdown");
         Some(TaskOutput::Destroy)
