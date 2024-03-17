@@ -115,7 +115,7 @@ pub mod tun {
         }
     }
 
-    pub fn create_tun<A: IntoAddress>(name: &str, ip: A, netmask: A, queues: usize) -> TunDevice {
+    pub fn create_tun<A: IntoAddress>(name: &str, ip: A, netmask: A, mtu: u16, queues: usize) -> TunDevice {
         let mut config = tun::Configuration::default();
         let ip: Ipv4Addr = ip.into_address().expect("Should convert to ip-v4");
         let netmask: Ipv4Addr = netmask.into_address().expect("Should convert to ip-v4");
@@ -129,7 +129,7 @@ pub mod tun {
             .address(ip)
             .destination(ip)
             .netmask(netmask)
-            .mtu(1180)
+            .mtu(mtu as i32)
             .up();
 
         #[cfg(target_os = "linux")]
