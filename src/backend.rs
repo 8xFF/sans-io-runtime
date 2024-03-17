@@ -98,6 +98,7 @@ pub mod tun {
             let queue = self.device.queue(0)?;
             #[cfg(target_os = "linux")]
             let queue = self.device.queue(index)?;
+            queue.set_nonblock().expect("Should set tun nonblock");
             let raw_fd = queue.as_raw_fd();
             Some(TunFd {
                 fd: Fd(raw_fd),
@@ -115,7 +116,13 @@ pub mod tun {
         }
     }
 
-    pub fn create_tun<A: IntoAddress>(name: &str, ip: A, netmask: A, mtu: u16, queues: usize) -> TunDevice {
+    pub fn create_tun<A: IntoAddress>(
+        name: &str,
+        ip: A,
+        netmask: A,
+        mtu: u16,
+        queues: usize,
+    ) -> TunDevice {
         let mut config = tun::Configuration::default();
         let ip: Ipv4Addr = ip.into_address().expect("Should convert to ip-v4");
         let netmask: Ipv4Addr = netmask.into_address().expect("Should convert to ip-v4");
