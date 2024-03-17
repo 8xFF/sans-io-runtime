@@ -65,7 +65,7 @@ use crate::{
 use super::{Awaker, Backend, BackendIncoming};
 
 #[cfg(feature = "tun-tap")]
-use std::io::Write;
+use std::io::{Read, Write};
 
 enum SocketType {
     #[cfg(feature = "udp")]
@@ -260,6 +260,22 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
                         if let Err(e) = socket.send_to(&data, to) {
                             log::error!("Poll send_to error {:?}", e);
+                        }
+                    } else {
+                        log::error!("Poll send_to error: no socket for {}", slot);
+                    }
+                } else {
+                    log::error!("Poll send_to error: no socket for {}", slot);
+                }
+            }
+            #[cfg(feature = "udp")]
+            NetOutgoing::UdpPackets { to, slot, data } => {
+                if let Some(socket) = self.sockets.get_mut(slot) {
+                    if let Some(SocketType::Udp(socket, _, _)) = socket {
+                        for dest in to {
+                            if let Err(e) = socket.send_to(&data, dest) {
+                                log::error!("Poll send_to error {:?}", e);
+                            }
                         }
                     } else {
                         log::error!("Poll send_to error: no socket for {}", slot);

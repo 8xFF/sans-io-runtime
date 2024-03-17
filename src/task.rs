@@ -65,10 +65,16 @@ impl<'a> NetIncoming<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Buffer<'a> {
     Ref(&'a [u8]),
     Vec(Vec<u8>),
+}
+
+impl<'a> From<&'a [u8]> for Buffer<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Buffer::Ref(value)
+    }
 }
 
 impl<'a> Deref for Buffer<'a> {
@@ -92,6 +98,12 @@ pub enum NetOutgoing<'a> {
     UdpPacket {
         slot: usize,
         to: SocketAddr,
+        data: Buffer<'a>,
+    },
+    #[cfg(feature = "udp")]
+    UdpPackets {
+        slot: usize,
+        to: Vec<SocketAddr>,
         data: Buffer<'a>,
     },
     #[cfg(feature = "tun-tap")]
@@ -150,6 +162,10 @@ impl<'a, ChannelIn, ChannelOut, Event> TaskOutput<'a, ChannelIn, ChannelOut, Eve
                 #[cfg(feature = "udp")]
                 NetOutgoing::UdpPacket { slot, to, data } => {
                     NetOutgoing::UdpPacket { slot, to, data }
+                }
+                #[cfg(feature = "udp")]
+                NetOutgoing::UdpPackets { slot, to, data } => {
+                    NetOutgoing::UdpPackets { slot, to, data }
                 }
                 #[cfg(feature = "tun-tap")]
                 NetOutgoing::TunBind { fd } => NetOutgoing::TunBind { fd },
