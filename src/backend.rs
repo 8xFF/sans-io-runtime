@@ -10,11 +10,17 @@ mod mio;
 #[cfg(feature = "poll-backend")]
 mod poll;
 
+#[cfg(feature = "polling-backend")]
+mod polling;
+
 #[cfg(feature = "mio-backend")]
 pub use mio::MioBackend;
 
 #[cfg(feature = "poll-backend")]
 pub use poll::PollBackend;
+
+#[cfg(feature = "polling-backend")]
+pub use polling::PollingBackend;
 
 /// Represents an incoming network event.
 #[derive(Debug)]

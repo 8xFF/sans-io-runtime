@@ -353,6 +353,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                         _ => None,
                     }
                 }
+                _ => None,
             },
             WorkerInnerInput::Ext(_ext) => {
                 self.last_input = None;

@@ -201,6 +201,7 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
                 NetIncoming::UdpListenResult { .. } => {
                     panic!("Unexpected UdpListenResult");
                 }
+                _ => None,
             },
             TaskInput::Bus(channel, event) => match event {
                 SfuEvent::RequestKeyFrame(kind) => {
