@@ -38,7 +38,7 @@ struct EchoTask<const FAKE_TYPE: u16> {
     cfg: EchoTaskCfg,
     local_addr: SocketAddr,
     local_backend_slot: usize,
-    output: heapless::Deque<TaskOutput<'static, ChannelId, ChannelId, Event>, 16>,
+    output: heapless::Deque<TaskOutput<'static, ExtOut, ChannelId, ChannelId, Event>, 16>,
 }
 
 impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
@@ -61,21 +61,23 @@ impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
     }
 }
 
-impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask<FAKE_TYPE> {
+impl<const FAKE_TYPE: u16> Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event>
+    for EchoTask<FAKE_TYPE>
+{
     const TYPE: u16 = FAKE_TYPE;
 
     fn on_tick<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>> {
         self.output.pop_front()
     }
 
     fn on_event<'b>(
         &mut self,
         _now: Instant,
-        input: TaskInput<'b, ChannelId, Event>,
-    ) -> Option<TaskOutput<'b, ChannelId, ChannelId, Event>> {
+        input: TaskInput<'b, ExtIn, ChannelId, Event>,
+    ) -> Option<TaskOutput<'b, ExtOut, ChannelId, ChannelId, Event>> {
         match input {
             TaskInput::Net(NetIncoming::UdpListenResult { bind, result }) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
@@ -114,14 +116,14 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>> {
         self.output.pop_front()
     }
 
     fn shutdown<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, Event>> {
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>> {
         log::info!("EchoTask {} shutdown", FAKE_TYPE);
         self.output
             .push_back(TaskOutput::Net(NetOutgoing::UdpUnlisten {
@@ -137,8 +139,8 @@ impl<const FAKE_TYPE: u16> Task<ChannelId, ChannelId, Event, Event> for EchoTask
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<ChannelId, ChannelId, Event, Event, EchoTask<0>, 16>,
-    echo_type2: TaskGroup<ChannelId, ChannelId, Event, Event, EchoTask<1>, 16>,
+    echo_type1: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask<0>, 16>,
+    echo_type2: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask<1>, 16>,
     group_state: TaskGroupOutputsState<2>,
     last_input_index: Option<u16>,
 }

@@ -3,56 +3,64 @@ use std::{hash::Hash, marker::PhantomData, time::Instant};
 use crate::{collections::DynamicVec, Owner, Task, TaskInput, TaskOutput, WorkerInnerOutput};
 
 /// Represents the input of a task group.
-pub struct TaskGroupInput<'a, ChannelId, Event>(pub Owner, pub TaskInput<'a, ChannelId, Event>);
+pub struct TaskGroupInput<'a, ExtIn, ChannelId, Event>(
+    pub Owner,
+    pub TaskInput<'a, ExtIn, ChannelId, Event>,
+);
 
 /// Represents the output of a task group.
-pub struct TaskGroupOutput<'a, ChannelIn, ChannelOut, Event>(
+pub struct TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>(
     pub Owner,
-    pub TaskOutput<'a, ChannelIn, ChannelOut, Event>,
+    pub TaskOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>,
 );
 
 impl<
         'a,
+        ExtOut,
         ChannelIn,
         ChannelOut,
         Event,
-        IExtOut,
+        IExtOut: From<ExtOut>,
         IChannel: From<ChannelIn> + From<ChannelOut>,
         IEvent: From<Event>,
         ISCfg,
-    > From<TaskGroupOutput<'a, ChannelIn, ChannelOut, Event>>
+    > From<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>>
     for WorkerInnerOutput<'a, IExtOut, IChannel, IEvent, ISCfg>
 {
-    fn from(value: TaskGroupOutput<'a, ChannelIn, ChannelOut, Event>) -> Self {
+    fn from(value: TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>) -> Self {
         WorkerInnerOutput::Task(value.0, value.1.convert_into())
     }
 }
 
 /// Represents a group of tasks.
 pub struct TaskGroup<
+    ExtIn,
+    ExtOut,
     ChannelIn: Hash + Eq + PartialEq,
     ChannelOut,
     EventIn,
     EventOut,
-    T: Task<ChannelIn, ChannelOut, EventIn, EventOut>,
+    T: Task<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut>,
     const STACK_SIZE: usize,
 > {
     worker: u16,
     tasks: DynamicVec<Option<T>, STACK_SIZE>,
-    _tmp: PhantomData<(ChannelIn, ChannelOut, EventIn, EventOut)>,
+    _tmp: PhantomData<(ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut)>,
     next_tick_index: Option<usize>,
     last_input_index: Option<usize>,
     destroy_list: DynamicVec<usize, STACK_SIZE>,
 }
 
 impl<
+        ExtIn,
+        ExtOut,
         ChannelIn: Hash + Eq + PartialEq,
         ChannelOut,
         EventIn,
         EventOut,
-        T: Task<ChannelIn, ChannelOut, EventIn, EventOut>,
+        T: Task<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut>,
         const MAX_TASKS: usize,
-    > TaskGroup<ChannelIn, ChannelOut, EventIn, EventOut, T, MAX_TASKS>
+    > TaskGroup<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut, T, MAX_TASKS>
 {
     /// Creates a new task group with the specified worker ID.
     pub fn new(worker: u16) -> Self {
@@ -91,7 +99,7 @@ impl<
     pub fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
+    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         self.clear_destroyed_task();
 
         let mut index = self.next_tick_index.unwrap_or(0);
@@ -127,8 +135,8 @@ impl<
     pub fn on_event<'a>(
         &mut self,
         now: Instant,
-        input: TaskGroupInput<'a, ChannelIn, EventIn>,
-    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
+        input: TaskGroupInput<'a, ExtIn, ChannelIn, EventIn>,
+    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         let TaskGroupInput(owner, input) = input;
         let index = owner.task_index().expect("should have task index");
         let task = self
@@ -151,7 +159,7 @@ impl<
     pub fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
+    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         // We dont clear_destroyed_task here because have some case we have output after we received TaskOutput::Destroy the task.
         // We will clear_destroyed_task in next pop_output call.
 
@@ -175,7 +183,7 @@ impl<
     pub fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ChannelIn, ChannelOut, EventOut>> {
+    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         let mut index = self.next_tick_index.unwrap_or(0);
         while index < self.tasks.len() {
             let task = match self.tasks.get_mut_or_panic(index) {

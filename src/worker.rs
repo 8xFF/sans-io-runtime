@@ -45,12 +45,12 @@ impl WorkerStats {
 }
 
 pub enum WorkerInnerInput<'a, ExtIn, ChannelId, Event> {
-    Task(Owner, TaskInput<'a, ChannelId, Event>),
+    Task(Owner, TaskInput<'a, ExtIn, ChannelId, Event>),
     Ext(ExtIn),
 }
 
 pub enum WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg> {
-    Task(Owner, TaskOutput<'a, ChannelId, ChannelId, Event>),
+    Task(Owner, TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>),
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
     Spawn(SCfg),
@@ -95,8 +95,8 @@ pub(crate) struct Worker<
     bus_local_hub: BusLocalHub<ChannelId>,
     inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
     backend: B,
-    worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
-    worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
+    worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
+    worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, INNER_BUS_STACK>,
     network_buffer: [u8; 8096],
     _tmp: std::marker::PhantomData<(Owner, ICfg)>,
 }
@@ -116,8 +116,8 @@ impl<
     pub fn new(
         inner: Inner,
         inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
-        worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
+        worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
+        worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, INNER_BUS_STACK>,
     ) -> Self {
         let backend = B::default();
         inner_bus.set_awaker(backend.create_awaker());
@@ -218,7 +218,7 @@ impl<
         now: Instant,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
         bus_local_hub: &mut BusLocalHub<ChannelId>,
     ) {
@@ -242,7 +242,7 @@ impl<
         now: Instant,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
         bus_local_hub: &mut BusLocalHub<ChannelId>,
     ) {
@@ -296,7 +296,7 @@ impl<
         input: WorkerInnerInput<ExtIn, ChannelId, Event>,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
         bus_local_hub: &mut BusLocalHub<ChannelId>,
     ) {
@@ -320,18 +320,18 @@ impl<
         out: WorkerInnerOutput<ExtOut, ChannelId, Event, SCfg>,
         worker: u16,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
         bus_local_hub: &mut BusLocalHub<ChannelId>,
     ) {
         match out {
-            WorkerInnerOutput::Task(owner, TaskOutput::Net(event)) => {
-                backend.on_action(owner, event);
-            }
             WorkerInnerOutput::Spawn(cfg) => {
                 worker_out
                     .send(0, true, WorkerControlOut::Spawn(cfg))
                     .expect("Should send success with safe flag");
+            }
+            WorkerInnerOutput::Task(owner, TaskOutput::Net(event)) => {
+                backend.on_action(owner, event);
             }
             WorkerInnerOutput::Task(owner, TaskOutput::Bus(event)) => match event {
                 BusEvent::ChannelSubscribe(channel) => {
@@ -355,9 +355,16 @@ impl<
                 backend.remove_owner(owner);
                 bus_local_hub.remove_owner(owner);
             }
+            WorkerInnerOutput::Task(owner, TaskOutput::Ext(out)) => {
+                log::trace!("Worker {worker} send external from owner {:?}", owner);
+                // TODO don't hardcode 0
+                if let Err(e) = worker_out.send(0, true, WorkerControlOut::Ext(out)) {
+                    log::error!("Failed to send external: {:?}", e);
+                }
+            }
             WorkerInnerOutput::Ext(safe, ext) => {
                 // TODO don't hardcode 0
-                log::info!("Worker {worker} send external");
+                log::trace!("Worker {worker} send external");
                 if let Err(e) = worker_out.send(0, safe, WorkerControlOut::Ext(ext)) {
                     log::error!("Failed to send external: {:?}", e);
                 }

@@ -163,6 +163,9 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
         while let Some(out) = self.output.pop_front() {
             return Some(out);
         }
+        if self.sockets.len() == 0 {
+            return None;
+        }
 
         let mut last_poll_socket = self.last_poll_socket.unwrap_or(0);
         loop {

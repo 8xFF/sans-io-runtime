@@ -89,8 +89,8 @@ pub enum SCfg {
 pub struct SfuWorker {
     worker: u16,
     dtls_cert: DtlsCert,
-    whip_group: TaskGroup<ChannelId, ChannelId, SfuEvent, SfuEvent, WhipTask, 128>,
-    whep_group: TaskGroup<ChannelId, ChannelId, SfuEvent, SfuEvent, WhepTask, 128>,
+    whip_group: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent, WhipTask, 128>,
+    whep_group: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent, WhepTask, 128>,
     output: VecDeque<WorkerInnerOutput<'static, ExtOut, ChannelId, SfuEvent, SCfg>>,
     shared_udp: SharedUdpPort<TaskId>,
     last_input: Option<u16>,

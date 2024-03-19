@@ -11,7 +11,7 @@ use str0m::{
     Candidate, Event as Str0mEvent, IceConnectionState, Input, Output, Rtc,
 };
 
-use super::{ChannelId, SfuEvent, TrackMedia};
+use super::{ChannelId, ExtIn, ExtOut, SfuEvent, TrackMedia};
 
 pub struct WhipTaskBuildResult {
     pub task: WhipTask,
@@ -27,7 +27,7 @@ pub struct WhipTask {
     audio_mid: Option<Mid>,
     video_mid: Option<Mid>,
     channel_id: u64,
-    output: DynamicDeque<TaskOutput<'static, ChannelId, ChannelId, SfuEvent>, 8>,
+    output: DynamicDeque<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>, 8>,
 }
 
 impl WhipTask {
@@ -77,7 +77,7 @@ impl WhipTask {
         &mut self,
         now: Instant,
         has_input: bool,
-    ) -> Option<TaskOutput<'static, ChannelId, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         if let Some(o) = self.output.pop_front() {
             return Some(o);
         }
@@ -155,7 +155,7 @@ impl WhipTask {
     }
 }
 
-impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
+impl Task<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
     /// The type identifier for the task.
     const TYPE: u16 = 0;
 
@@ -163,7 +163,7 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
     fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         let timeout = self.timeout?;
         if now < timeout {
             return None;
@@ -180,8 +180,8 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
     fn on_event<'a>(
         &mut self,
         now: Instant,
-        input: TaskInput<'a, ChannelId, SfuEvent>,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
+        input: TaskInput<'a, ExtIn, ChannelId, SfuEvent>,
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         match input {
             TaskInput::Net(event) => match event {
                 NetIncoming::UdpPacket {
@@ -226,6 +226,7 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
                     None
                 }
             },
+            TaskInput::Ext(_) => None,
         }
     }
 
@@ -233,14 +234,14 @@ impl Task<ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
     fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         self.pop_event_inner(now, false)
     }
 
     fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskOutput<'a, ChannelId, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         self.rtc.disconnect();
         self.output
             .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(

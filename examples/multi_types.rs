@@ -84,35 +84,35 @@ impl Task1 {
     }
 }
 
-impl Task<Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
+impl Task<Type1ExtIn, Type1ExtOut, Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
     const TYPE: u16 = 0;
 
     fn on_tick<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
+    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
     fn on_event<'b>(
         &mut self,
         _now: Instant,
-        _input: TaskInput<'b, Type1Channel, Type1Event>,
-    ) -> Option<TaskOutput<'b, Type1Channel, Type1Channel, Type1Event>> {
+        _input: TaskInput<'b, Type1ExtIn, Type1Channel, Type1Event>,
+    ) -> Option<TaskOutput<'b, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
+    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
     fn shutdown<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1Channel, Type1Channel, Type1Event>> {
+    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         Some(TaskOutput::Destroy)
     }
 }
@@ -128,35 +128,35 @@ impl Task2 {
     }
 }
 
-impl Task<Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
+impl Task<Type2ExtIn, Type2ExtOut, Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
     const TYPE: u16 = 1;
 
     fn on_tick<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
+    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
     fn on_event<'b>(
         &mut self,
         _now: Instant,
-        _input: TaskInput<'b, Type2Channel, Type2Event>,
-    ) -> Option<TaskOutput<'b, Type2Channel, Type2Channel, Type2Event>> {
+        _input: TaskInput<'b, Type2ExtIn, Type2Channel, Type2Event>,
+    ) -> Option<TaskOutput<'b, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
+    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
     fn shutdown<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2Channel, Type2Channel, Type2Event>> {
+    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         log::info!("received shutdown");
         Some(TaskOutput::Destroy)
     }
@@ -164,8 +164,26 @@ impl Task<Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<Type1Channel, Type1Channel, Type1Event, Type1Event, Task1, 16>,
-    echo_type2: TaskGroup<Type2Channel, Type2Channel, Type2Event, Type2Event, Task2, 16>,
+    echo_type1: TaskGroup<
+        Type1ExtIn,
+        Type1ExtOut,
+        Type1Channel,
+        Type1Channel,
+        Type1Event,
+        Type1Event,
+        Task1,
+        16,
+    >,
+    echo_type2: TaskGroup<
+        Type2ExtIn,
+        Type2ExtOut,
+        Type2Channel,
+        Type2Channel,
+        Type2Event,
+        Type2Event,
+        Task2,
+        16,
+    >,
     group_state: TaskGroupOutputsState<2>,
     last_input_index: Option<u16>,
 }

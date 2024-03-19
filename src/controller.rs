@@ -30,9 +30,9 @@ pub struct Controller<
     const INNER_BUS_STACK: usize,
 > {
     worker_inner_bus: BusSystemBuilder<ChannelId, Event, INNER_BUS_STACK>,
-    worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>, 16>,
-    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
-    worker_event: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, 16>,
+    worker_control_bus: BusSystemBuilder<u16, WorkerControlIn<ExtIn, SCfg>, INNER_BUS_STACK>,
+    worker_event_bus: BusSystemBuilder<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
+    worker_event: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
     worker_threads: Vec<WorkerContainer>,
     output: DynamicDeque<ExtOut, 16>,
     state: State,
