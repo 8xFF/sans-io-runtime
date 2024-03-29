@@ -59,7 +59,7 @@ Controller will spawn some threads and each thread will run a worker. The worker
 
 ## [Benchmarking](./docs/benchmark.md)
 
-- External communication can archive 1.5M messages (1500 bytes) per second, that is 1.5M * 1500 * 8 = 18Gbps, this is just enought for almost of application. The latency is 2.5ms, because of we doing in polling base, maybe it can improve by using interrupt base.
+- External communication can archive 1.5M messages (1500 bytes) per second, that is 1.5M * 1500 * 8 = 18Gbps, this is just enough for almost of application. The latency is 2.5ms, because of we doing in polling base, maybe it can improve by using interrupt base.
 
 ## Design
 
