@@ -15,7 +15,7 @@ use std::{ops::Deref, time::Instant};
 use crate::{backend::BackendIncoming, bus::BusEvent};
 
 pub mod group;
-pub mod group_state;
+pub mod switcher;
 
 /// Represents an incoming network event.
 #[derive(Debug)]

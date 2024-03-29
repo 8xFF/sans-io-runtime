@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{fmt::Debug, hash::Hash, time::Duration};
 
 use crate::{
     backend::Backend,
@@ -73,29 +73,36 @@ impl<
         B: Backend,
     >(
         &mut self,
+        tick: Duration,
         cfg: ICfg,
         stack_size: Option<usize>,
     ) {
+        let worker_index = self.worker_threads.len();
         let worker_in = self.worker_control_bus.new_worker();
         let worker_out = self.worker_event_bus.new_worker();
         let worker_inner = self.worker_inner_bus.new_worker();
 
         let stack_size = stack_size.unwrap_or(DEFAULT_STACK_SIZE);
         log::info!("create worker with stack size: {}", stack_size);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
         let join = std::thread::Builder::new()
             .stack_size(stack_size)
             .spawn(move || {
                 let mut worker = worker::Worker::<_, _, _, _, _, _, _, B, INNER_BUS_STACK>::new(
+                    tick,
                     Inner::build(worker_in.leg_index() as u16, cfg),
                     worker_inner,
                     worker_out,
                     worker_in,
                 );
+                log::info!("Worker {worker_index} started");
+                tx.send(()).expect("Should send start signal");
                 loop {
                     worker.process();
                 }
             })
             .expect("Should spawn worker thread");
+        rx.recv().expect("Should receive start signal");
         self.worker_threads.push(WorkerContainer {
             _join: join,
             stats: Default::default(),

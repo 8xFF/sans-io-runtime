@@ -9,14 +9,14 @@ use std::{
 
 use sans_io_runtime::{
     backend::PollBackend, Buffer, Controller, ErrorDebugger2, NetIncoming, NetOutgoing, Task,
-    TaskGroup, TaskGroupInput, TaskGroupOutputsState, TaskInput, TaskOutput, WorkerInner,
-    WorkerInnerInput, WorkerInnerOutput,
+    TaskGroup, TaskGroupInput, TaskInput, TaskOutput, WorkerInner, WorkerInnerInput,
+    WorkerInnerOutput,
 };
 
 type ExtIn = ();
 type ExtOut = ();
 type ICfg = ();
-type SCfg = EchoTaskMultiCfg;
+type SCfg = EchoTaskCfg;
 type ChannelId = ();
 type Event = ();
 
@@ -27,13 +27,7 @@ struct EchoTaskCfg {
     brust_size: usize,
 }
 
-#[derive(Debug, Clone)]
-enum EchoTaskMultiCfg {
-    Type1(EchoTaskCfg),
-    Type2(EchoTaskCfg),
-}
-
-struct EchoTask<const FAKE_TYPE: u16> {
+struct EchoTask {
     count: usize,
     cfg: EchoTaskCfg,
     local_addr: SocketAddr,
@@ -41,7 +35,7 @@ struct EchoTask<const FAKE_TYPE: u16> {
     output: heapless::Deque<TaskOutput<'static, ExtOut, ChannelId, ChannelId, Event>, 16>,
 }
 
-impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
+impl EchoTask {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo client task in addr {}", cfg.dest);
         let mut output = heapless::Deque::new();
@@ -61,10 +55,8 @@ impl<const FAKE_TYPE: u16> EchoTask<FAKE_TYPE> {
     }
 }
 
-impl<const FAKE_TYPE: u16> Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event>
-    for EchoTask<FAKE_TYPE>
-{
-    const TYPE: u16 = FAKE_TYPE;
+impl Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event> for EchoTask {
+    const TYPE: u16 = 0;
 
     fn on_tick<'a>(
         &mut self,
@@ -99,7 +91,7 @@ impl<const FAKE_TYPE: u16> Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Even
             TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }) => {
                 self.count += 1;
                 if self.count >= self.cfg.count {
-                    log::info!("EchoTask {} done", FAKE_TYPE);
+                    log::info!("EchoTask done");
                     Some(TaskOutput::Destroy)
                 } else {
                     Some(TaskOutput::Net(NetOutgoing::UdpPacket {
@@ -124,7 +116,7 @@ impl<const FAKE_TYPE: u16> Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Even
         &mut self,
         _now: Instant,
     ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>> {
-        log::info!("EchoTask {} shutdown", FAKE_TYPE);
+        log::info!("EchoTask shutdown");
         self.output
             .push_back(TaskOutput::Net(NetOutgoing::UdpUnlisten {
                 slot: self.local_backend_slot,
@@ -139,15 +131,12 @@ impl<const FAKE_TYPE: u16> Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Even
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask<0>, 16>,
-    echo_type2: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask<1>, 16>,
-    group_state: TaskGroupOutputsState<2>,
-    last_input_index: Option<u16>,
+    tasks: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask, 16>,
 }
 
 impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
     fn tasks(&self) -> usize {
-        self.echo_type1.tasks() + self.echo_type2.tasks()
+        self.tasks.tasks()
     }
 
     fn worker_index(&self) -> u16 {
@@ -157,44 +146,19 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn build(worker: u16, _cfg: ICfg) -> Self {
         Self {
             worker,
-            echo_type1: TaskGroup::new(worker),
-            echo_type2: TaskGroup::new(worker),
-            last_input_index: None,
-            group_state: TaskGroupOutputsState::default(),
+            tasks: TaskGroup::new(worker),
         }
     }
 
     fn spawn(&mut self, _now: Instant, cfg: SCfg) {
-        match cfg {
-            EchoTaskMultiCfg::Type1(cfg) => {
-                self.echo_type1.add_task(EchoTask::new(cfg));
-            }
-            EchoTaskMultiCfg::Type2(cfg) => {
-                self.echo_type2.add_task(EchoTask::new(cfg));
-            }
-        }
+        self.tasks.add_task(EchoTask::new(cfg));
     }
 
     fn on_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        let gs = &mut self.group_state;
-        loop {
-            match gs.current()? {
-                0 => {
-                    if let Some(e) = gs.process(self.echo_type1.on_tick(now)) {
-                        return Some(e.into());
-                    }
-                }
-                1 => {
-                    if let Some(e) = gs.process(self.echo_type2.on_tick(now)) {
-                        return Some(e.into());
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
+        self.tasks.on_tick(now).map(|a| a.into())
     }
 
     fn on_event<'a>(
@@ -203,23 +167,10 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
         event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
         match event {
-            WorkerInnerInput::Task(owner, event) => match owner.group_id() {
-                Some(0) => {
-                    let res = self
-                        .echo_type1
-                        .on_event(now, TaskGroupInput(owner, event))?;
-                    self.last_input_index = Some(1);
-                    Some(res.into())
-                }
-                Some(1) => {
-                    let res = self
-                        .echo_type2
-                        .on_event(now, TaskGroupInput(owner, event))?;
-                    self.last_input_index = Some(2);
-                    Some(res.into())
-                }
-                _ => unreachable!(),
-            },
+            WorkerInnerInput::Task(owner, event) => self
+                .tasks
+                .on_event(now, TaskGroupInput(owner, event))
+                .map(|a| a.into()),
             _ => unreachable!(),
         }
     }
@@ -228,33 +179,14 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        match self.last_input_index? {
-            0 => self.echo_type1.pop_output(now).map(|a| a.into()),
-            1 => self.echo_type2.pop_output(now).map(|a| a.into()),
-            _ => unreachable!(),
-        }
+        self.tasks.pop_output(now).map(|a| a.into())
     }
 
     fn shutdown<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        let gs = &mut self.group_state;
-        loop {
-            match gs.current()? {
-                0 => {
-                    if let Some(e) = gs.process(self.echo_type1.shutdown(now)) {
-                        return Some(e.into());
-                    }
-                }
-                1 => {
-                    if let Some(e) = gs.process(self.echo_type2.shutdown(now)) {
-                        return Some(e.into());
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
+        self.tasks.shutdown(now).map(|a| a.into())
     }
 }
 
@@ -262,21 +194,29 @@ fn main() {
     env_logger::init();
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
-        Controller::<ExtIn, ExtOut, EchoTaskMultiCfg, ChannelId, Event, 1024>::default();
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>((), None);
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>((), None);
+        Controller::<ExtIn, ExtOut, EchoTaskCfg, ChannelId, Event, 1024>::default();
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+        Duration::from_secs(1),
+        (),
+        None,
+    );
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+        Duration::from_secs(1),
+        (),
+        None,
+    );
 
     for _i in 0..2 {
-        controller.spawn(EchoTaskMultiCfg::Type1(EchoTaskCfg {
+        controller.spawn(EchoTaskCfg {
             count: 1000,
             brust_size: 1,
             dest: SocketAddr::from(([127, 0, 0, 1], 10001)),
-        }));
-        controller.spawn(EchoTaskMultiCfg::Type2(EchoTaskCfg {
+        });
+        controller.spawn(EchoTaskCfg {
             count: 10000,
             brust_size: 1,
             dest: SocketAddr::from(([127, 0, 0, 1], 10002)),
-        }));
+        });
     }
 
     let term = Arc::new(AtomicBool::new(false));

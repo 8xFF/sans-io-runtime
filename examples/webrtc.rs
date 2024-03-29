@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use sans_io_runtime::{backend::PollBackend, Controller};
+use sans_io_runtime::{backend::PollingBackend, Controller};
 use sfu::{ChannelId, ExtIn, ExtOut, ICfg, SCfg, SfuEvent, SfuWorker};
 mod http;
 mod sfu;
@@ -15,17 +15,19 @@ fn main() {
     if std::env::var_os("RUST_LOG").is_none() {
         std::env::set_var("RUST_LOG", "info");
     }
-    env_logger::init();
+    env_logger::builder().format_timestamp_millis().init();
 
     let mut server = http::SimpleHttpServer::new(8080);
     let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, SfuEvent, 128>::default();
-    controller.add_worker::<_, SfuWorker, PollBackend<128, 512>>(
+    controller.add_worker::<_, SfuWorker, PollingBackend<128, 512>>(
+        Duration::from_millis(100),
         ICfg {
             udp_addr: "192.168.1.39:0".parse().unwrap(),
         },
         None,
     );
-    controller.add_worker::<_, SfuWorker, PollBackend<128, 512>>(
+    controller.add_worker::<_, SfuWorker, PollingBackend<128, 512>>(
+        Duration::from_millis(100),
         ICfg {
             udp_addr: "192.168.1.39:0".parse().unwrap(),
         },
@@ -36,7 +38,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
         .expect("Should register hook");
 
-    while let Ok(req) = server.recv(Duration::from_micros(100)) {
+    while let Ok(req) = server.recv(Duration::from_millis(100)) {
         if controller.process().is_none() {
             break;
         }

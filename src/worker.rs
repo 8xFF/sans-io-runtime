@@ -91,6 +91,8 @@ pub(crate) struct Worker<
     B: Backend,
     const INNER_BUS_STACK: usize,
 > {
+    tick: Duration,
+    last_tick: Instant,
     inner: Inner,
     bus_local_hub: BusLocalHub<ChannelId>,
     inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
@@ -114,6 +116,7 @@ impl<
     > Worker<ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B, INNER_BUS_STACK>
 {
     pub fn new(
+        tick: Duration,
         inner: Inner,
         inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
@@ -123,6 +126,8 @@ impl<
         inner_bus.set_awaker(backend.create_awaker());
         Self {
             inner,
+            tick,
+            last_tick: Instant::now(),
             bus_local_hub: Default::default(),
             inner_bus,
             backend,
@@ -173,14 +178,17 @@ impl<
             }
         }
 
-        Self::on_input_tick(
-            now,
-            &mut self.inner,
-            &mut self.inner_bus,
-            &mut self.worker_out,
-            &mut self.backend,
-            &mut self.bus_local_hub,
-        );
+        if now.duration_since(self.last_tick) >= self.tick {
+            self.last_tick = now;
+            Self::on_input_tick(
+                now,
+                &mut self.inner,
+                &mut self.inner_bus,
+                &mut self.worker_out,
+                &mut self.backend,
+                &mut self.bus_local_hub,
+            );
+        }
 
         //one cycle is process in 1ms then we minus 1ms with eslaped time
         let remain_time = Duration::from_millis(1)
@@ -248,6 +256,7 @@ impl<
     ) {
         let worker = inner.worker_index();
         while let Some(out) = inner.shutdown(now) {
+            log::info!("Process shutdown");
             Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
             while let Some(out) = inner.pop_output(now) {
                 Self::process_inner_output(

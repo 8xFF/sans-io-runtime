@@ -128,12 +128,14 @@ fn main() {
     env_logger::init();
     let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 1024>::default();
     controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(
+        Duration::from_secs(1),
         EchoWorkerCfg {
             bind: SocketAddr::from(([127, 0, 0, 1], 10001)),
         },
         None,
     );
     controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(
+        Duration::from_secs(1),
         EchoWorkerCfg {
             bind: SocketAddr::from(([127, 0, 0, 1], 10002)),
         },

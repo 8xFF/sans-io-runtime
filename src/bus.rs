@@ -217,8 +217,6 @@ impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SI
                     );
                 }
             }
-        } else {
-            log::warn!("Channel {:?} not found", channel);
         }
     }
 }

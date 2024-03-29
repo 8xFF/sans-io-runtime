@@ -85,7 +85,11 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
 fn main() {
     env_logger::init();
     let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 4096>::default();
-    controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(EchoWorkerCfg {}, None);
+    controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(
+        Duration::from_secs(1),
+        EchoWorkerCfg {},
+        None,
+    );
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
         .expect("Should register hook");

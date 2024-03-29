@@ -6,6 +6,7 @@ use sans_io_runtime::{
 };
 use str0m::{
     change::{DtlsCert, SdpOffer},
+    ice::IceCreds,
     media::{KeyframeRequestKind, MediaKind, Mid},
     net::{Protocol, Receive},
     Candidate, Event as Str0mEvent, IceConnectionState, Input, Output, Rtc,
@@ -41,13 +42,16 @@ impl WhepTask {
         let rtc_config = Rtc::builder()
             .set_rtp_mode(true)
             .set_ice_lite(true)
-            .set_dtls_cert(dtls_cert);
+            .set_dtls_cert(dtls_cert)
+            .set_local_ice_credentials(IceCreds::new());
+
         let ice_ufrag = rtc_config
             .local_ice_credentials()
             .as_ref()
             .expect("should have ice credentials")
             .ufrag
             .clone();
+
         let mut rtc = rtc_config.build();
         rtc.direct_api().enable_twcc_feedback();
 

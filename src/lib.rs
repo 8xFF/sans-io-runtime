@@ -11,7 +11,7 @@ pub use controller::Controller;
 pub use owner::Owner;
 pub use task::{
     group::{TaskGroup, TaskGroupInput, TaskGroupOutput},
-    group_state::TaskGroupOutputsState,
+    switcher::TaskSwitcher,
     Buffer, NetIncoming, NetOutgoing, Task, TaskInput, TaskOutput,
 };
 pub use trace::*;

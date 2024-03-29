@@ -1,6 +1,8 @@
 use std::{hash::Hash, marker::PhantomData, time::Instant};
 
-use crate::{collections::DynamicVec, Owner, Task, TaskInput, TaskOutput, WorkerInnerOutput};
+use crate::{
+    collections::DynamicVec, Owner, Task, TaskInput, TaskOutput, TaskSwitcher, WorkerInnerOutput,
+};
 
 /// Represents the input of a task group.
 pub struct TaskGroupInput<'a, ExtIn, ChannelId, Event>(
@@ -46,8 +48,7 @@ pub struct TaskGroup<
     worker: u16,
     tasks: DynamicVec<Option<T>, STACK_SIZE>,
     _tmp: PhantomData<(ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut)>,
-    next_tick_index: Option<usize>,
-    last_input_index: Option<usize>,
+    switcher: TaskSwitcher,
     destroy_list: DynamicVec<usize, STACK_SIZE>,
 }
 
@@ -59,8 +60,8 @@ impl<
         EventIn,
         EventOut,
         T: Task<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut>,
-        const MAX_TASKS: usize,
-    > TaskGroup<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut, T, MAX_TASKS>
+        const STACK_SIZE: usize,
+    > TaskGroup<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut, T, STACK_SIZE>
 {
     /// Creates a new task group with the specified worker ID.
     pub fn new(worker: u16) -> Self {
@@ -68,8 +69,7 @@ impl<
             worker,
             tasks: DynamicVec::default(),
             _tmp: Default::default(),
-            next_tick_index: None,
-            last_input_index: None,
+            switcher: TaskSwitcher::new(0),
             destroy_list: DynamicVec::default(),
         }
     }
@@ -77,7 +77,8 @@ impl<
     /// Returns the number of tasks in the group.
     pub fn tasks(&self) -> usize {
         //count all task which not None
-        self.tasks.iter().filter(|x| x.is_some()).count()
+        let tasks = self.tasks.iter().filter(|x| x.is_some()).count();
+        tasks
     }
 
     /// Adds a task to the group.
@@ -90,6 +91,7 @@ impl<
         }
 
         self.tasks.push_safe(Some(task));
+        self.switcher.set_tasks(self.tasks.len());
         self.tasks.len() - 1
     }
 
@@ -102,30 +104,22 @@ impl<
     ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         self.clear_destroyed_task();
 
-        let mut index = self.next_tick_index.unwrap_or(0);
-        while index < self.tasks.len() {
+        while let Some(index) = self.switcher.looper_current(now) {
             let task = match self.tasks.get_mut_or_panic(index) {
                 Some(task) => task,
                 None => {
-                    index += 1;
+                    self.switcher.looper_process(None::<()>);
                     continue;
                 }
             };
-            self.last_input_index = Some(index);
-            self.next_tick_index = Some(index + 1);
-            if let Some(out) = task.on_tick(now) {
+            if let Some(out) = self.switcher.looper_process(task.on_tick(now)) {
                 if let TaskOutput::Destroy = out {
                     self.destroy_list.push_safe(index);
                 }
                 let owner = Owner::task(self.worker, T::TYPE, index);
                 return Some(TaskGroupOutput(owner, out));
-            } else {
-                index += 1;
             }
         }
-
-        self.next_tick_index = None;
-        self.last_input_index = None;
 
         None
     }
@@ -145,7 +139,7 @@ impl<
             .as_mut()
             .expect("should have task");
         let out = task.on_event(now, input)?;
-        self.last_input_index = Some(index);
+        self.switcher.queue_flag_task(index);
         if let TaskOutput::Destroy = out {
             self.destroy_list.push_safe(index);
         }
@@ -163,20 +157,21 @@ impl<
         // We dont clear_destroyed_task here because have some case we have output after we received TaskOutput::Destroy the task.
         // We will clear_destroyed_task in next pop_output call.
 
-        let index = self.last_input_index?;
-        let owner = Owner::task(self.worker, T::TYPE, index);
-        let slot = self.tasks.get_mut_or_panic(index).as_mut();
-        let out = match slot.expect("should have task").pop_output(now) {
-            Some(output) => output,
-            None => {
-                self.last_input_index = None;
-                return None;
+        while let Some(index) = self.switcher.queue_current() {
+            let owner = Owner::task(self.worker, T::TYPE, index);
+            let slot = self
+                .tasks
+                .get_mut_or_panic(index)
+                .as_mut()
+                .expect("should have task");
+            if let Some(out) = self.switcher.queue_process(slot.pop_output(now)) {
+                if let TaskOutput::Destroy = out {
+                    self.destroy_list.push_safe(index);
+                }
+                return Some(TaskGroupOutput(owner, out));
             }
-        };
-        if let TaskOutput::Destroy = out {
-            self.destroy_list.push_safe(index);
         }
-        Some(TaskGroupOutput(owner, out))
+        None
     }
 
     /// Gracefully destroys the task group.
@@ -184,30 +179,24 @@ impl<
         &mut self,
         now: Instant,
     ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
-        let mut index = self.next_tick_index.unwrap_or(0);
-        while index < self.tasks.len() {
+        while let Some(index) = self.switcher.looper_current(now) {
+            log::info!("Group kill tasks {}/{}", index, self.switcher.tasks());
+            //We only call each task single time
+            self.switcher.looper_process(None::<()>);
             let task = match self.tasks.get_mut_or_panic(index) {
                 Some(task) => task,
                 None => {
-                    index += 1;
                     continue;
                 }
             };
-            self.last_input_index = Some(index);
-            self.next_tick_index = Some(index + 1);
             if let Some(out) = task.shutdown(now) {
                 if let TaskOutput::Destroy = out {
                     self.destroy_list.push_safe(index);
                 }
                 let owner = Owner::task(self.worker, T::TYPE, index);
                 return Some(TaskGroupOutput(owner, out));
-            } else {
-                index += 1;
             }
         }
-
-        self.next_tick_index = None;
-        self.last_input_index = None;
 
         None
     }
@@ -219,5 +208,6 @@ impl<
         while let Some(None) = self.tasks.last() {
             self.tasks.pop();
         }
+        self.switcher.set_tasks(self.tasks.len());
     }
 }

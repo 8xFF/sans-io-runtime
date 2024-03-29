@@ -7,8 +7,8 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::PollBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutputsState,
-    TaskInput, TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    backend::PollBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskInput, TaskOutput,
+    TaskSwitcher, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ICfg = ();
@@ -113,6 +113,7 @@ impl Task<Type1ExtIn, Type1ExtOut, Type1Channel, Type1Channel, Type1Event, Type1
         &mut self,
         _now: Instant,
     ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
+        log::info!("task1 received shutdown");
         Some(TaskOutput::Destroy)
     }
 }
@@ -157,7 +158,7 @@ impl Task<Type2ExtIn, Type2ExtOut, Type2Channel, Type2Channel, Type2Event, Type2
         &mut self,
         _now: Instant,
     ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
-        log::info!("received shutdown");
+        log::info!("task2 received shutdown");
         Some(TaskOutput::Destroy)
     }
 }
@@ -184,8 +185,7 @@ struct EchoWorkerInner {
         Task2,
         16,
     >,
-    group_state: TaskGroupOutputsState<2>,
-    last_input_index: Option<u16>,
+    switcher: TaskSwitcher,
 }
 
 impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
@@ -204,8 +204,7 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
             worker,
             echo_type1: TaskGroup::new(worker),
             echo_type2: TaskGroup::new(worker),
-            last_input_index: None,
-            group_state: TaskGroupOutputsState::default(),
+            switcher: TaskSwitcher::new(2),
         }
     }
 
@@ -224,15 +223,16 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+        let switcher = &mut self.switcher;
         loop {
-            match self.group_state.current()? {
+            match switcher.looper_current(now)? {
                 0 => {
-                    if let Some(e) = self.group_state.process(self.echo_type1.on_tick(now)) {
+                    if let Some(e) = switcher.looper_process(self.echo_type1.on_tick(now)) {
                         return Some(e.into());
                     }
                 }
                 1 => {
-                    if let Some(e) = self.group_state.process(self.echo_type2.on_tick(now)) {
+                    if let Some(e) = switcher.looper_process(self.echo_type2.on_tick(now)) {
                         return Some(e.into());
                     }
                 }
@@ -252,14 +252,14 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
                     let res = self
                         .echo_type1
                         .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
-                    self.last_input_index = Some(1);
+                    self.switcher.queue_flag_task(0);
                     Some(res.into())
                 }
                 Some(1) => {
                     let res = self
                         .echo_type2
                         .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
-                    self.last_input_index = Some(2);
+                    self.switcher.queue_flag_task(1);
                     Some(res.into())
                 }
                 _ => unreachable!(),
@@ -272,10 +272,21 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
-        match self.last_input_index? {
-            0 => self.echo_type1.pop_output(now).map(|a| a.into()),
-            1 => self.echo_type2.pop_output(now).map(|a| a.into()),
-            _ => unreachable!(),
+        let switcher = &mut self.switcher;
+        loop {
+            match switcher.queue_current()? {
+                0 => {
+                    if let Some(e) = switcher.queue_process(self.echo_type1.pop_output(now)) {
+                        return Some(e.into());
+                    }
+                }
+                1 => {
+                    if let Some(e) = switcher.queue_process(self.echo_type2.pop_output(now)) {
+                        return Some(e.into());
+                    }
+                }
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -284,14 +295,14 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         loop {
-            match self.group_state.current()? {
+            match self.switcher.looper_current(now)? {
                 0 => {
-                    if let Some(e) = self.group_state.process(self.echo_type1.shutdown(now)) {
+                    if let Some(e) = self.switcher.looper_process(self.echo_type1.shutdown(now)) {
                         return Some(e.into());
                     }
                 }
                 1 => {
-                    if let Some(e) = self.group_state.process(self.echo_type2.shutdown(now)) {
+                    if let Some(e) = self.switcher.looper_process(self.echo_type2.shutdown(now)) {
                         return Some(e.into());
                     }
                 }
@@ -306,8 +317,16 @@ fn main() {
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
         Controller::<TestExtIn, TestExtOut, TestSCfg, TestChannel, TestEvent, 1024>::default();
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>((), None);
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>((), None);
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+        Duration::from_secs(1),
+        (),
+        None,
+    );
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+        Duration::from_secs(1),
+        (),
+        None,
+    );
 
     for _i in 0..10 {
         controller.spawn(TestSCfg::Type1(Type1Cfg {}));
