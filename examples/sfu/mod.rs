@@ -223,7 +223,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
     fn build(worker: u16, cfg: ICfg) -> Self {
         Self {
             worker,
-            dtls_cert: DtlsCert::new(),
+            dtls_cert: DtlsCert::new_openssl(),
             whip_group: TaskGroup::new(worker),
             whep_group: TaskGroup::new(worker),
             output: VecDeque::from([WorkerInnerOutput::Task(

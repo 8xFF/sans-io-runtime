@@ -79,8 +79,8 @@ struct Task1 {
 }
 
 impl Task1 {
-    fn new(cfg: Type1Cfg) -> Self {
-        Self { _cfg: cfg }
+    fn new(_cfg: Type1Cfg) -> Self {
+        Self { _cfg }
     }
 }
 
@@ -123,8 +123,8 @@ struct Task2 {
 }
 
 impl Task2 {
-    fn new(cfg: Type2Cfg) -> Self {
-        Self { _cfg: cfg }
+    fn new(_cfg: Type2Cfg) -> Self {
+        Self { _cfg }
     }
 }
 

@@ -109,8 +109,16 @@ impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
 {
     fn broadcast(&self, safe: bool, msg: MSG) {
         let legs = self.legs.read();
-        for leg in &*legs {
-            let _ = leg.send(BusEventSource::External, safe, msg.clone());
+        match legs.len() {
+            0 => log::warn!("No leg to broadcast"),
+            1 => {
+                let _ = legs[0].send(BusEventSource::External, safe, msg);
+            }
+            _ => {
+                for leg in &*legs {
+                    let _ = leg.send(BusEventSource::External, safe, msg.clone());
+                }
+            }
         }
     }
 }
@@ -155,8 +163,16 @@ impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
 {
     fn broadcast(&self, safe: bool, msg: MSG) {
         let legs = self.legs.read();
-        for leg in &*legs {
-            let _ = leg.send(BusEventSource::Broadcast(self.leg_index), safe, msg.clone());
+        match legs.len() {
+            0 => log::warn!("No leg to broadcast"),
+            1 => {
+                let _ = legs[0].send(BusEventSource::External, safe, msg);
+            }
+            _ => {
+                for leg in &*legs {
+                    let _ = leg.send(BusEventSource::External, safe, msg.clone());
+                }
+            }
         }
     }
 }
@@ -186,12 +202,20 @@ impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SI
         let legs = self.legs.read();
         let channels = self.channels.read();
         if let Some(entry) = channels.get(&channel) {
-            for &leg_index in entry {
-                let _ = legs[leg_index].send(
+            if entry.len() == 1 {
+                let _ = legs[entry[0]].send(
                     BusEventSource::Channel(self.leg_index, channel),
                     safe,
-                    msg.clone(),
+                    msg,
                 );
+            } else {
+                for &leg_index in entry {
+                    let _ = legs[leg_index].send(
+                        BusEventSource::Channel(self.leg_index, channel),
+                        safe,
+                        msg.clone(),
+                    );
+                }
             }
         } else {
             log::warn!("Channel {:?} not found", channel);
