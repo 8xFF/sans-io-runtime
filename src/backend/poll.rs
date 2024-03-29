@@ -160,10 +160,10 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
     }
 
     fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
-        while let Some(out) = self.output.pop_front() {
+        if let Some(out) = self.output.pop_front() {
             return Some(out);
         }
-        if self.sockets.len() == 0 {
+        if self.sockets.is_empty() {
             return None;
         }
 

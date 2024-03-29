@@ -292,7 +292,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                 if fd.read {
                     unsafe {
                         if let Err(e) = self.poll.add_with_mode(
-                            &fd.fd.as_raw_fd(),
+                            fd.fd.as_raw_fd(),
                             Event::readable(slot),
                             PollMode::Level,
                         ) {
@@ -315,7 +315,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     if let Some(SocketType::Tun(fd, _)) = slot {
                         if fd.read {
                             let fd = unsafe { BorrowedFd::borrow_raw(fd.fd.as_raw_fd()) };
-                            if let Err(e) = self.poll.delete(&fd) {
+                            if let Err(e) = self.poll.delete(fd) {
                                 log::error!("Polling deregister error {:?}", e);
                             }
                         }
@@ -361,7 +361,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     if *owner2 == owner {
                         if fd.read {
                             let fd = unsafe { BorrowedFd::borrow_raw(fd.fd.as_raw_fd()) };
-                            if let Err(e) = self.poll.delete(&fd) {
+                            if let Err(e) = self.poll.delete(fd) {
                                 log::error!("Polling deregister error {:?}", e);
                             }
                         }

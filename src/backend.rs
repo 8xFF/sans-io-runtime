@@ -141,6 +141,8 @@ pub mod tun {
 
         #[cfg(target_os = "linux")]
         config.queues(queues);
+        #[cfg(not(target_os = "linux"))]
+        log::info!("Ignoring queues on non-linux platform, setting as {queues} but overrided to 1");
 
         let device = tun::create(&config).expect("Should create tun device");
         device
@@ -154,7 +156,7 @@ pub mod tun {
 
             //TODO avoid using fixed value
             let output = Command::new("route")
-                .args(&[
+                .args([
                     "-n",
                     "add",
                     "-net",

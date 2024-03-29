@@ -90,7 +90,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
         .expect("Should register hook");
 
-    for i in 0..4000 {
+    for _ in 0..4000 {
         controller.send_to(
             Owner::worker(0),
             ExtIn {

@@ -17,13 +17,58 @@ pub enum BusLegSenderErr {
     ChannelFull,
 }
 
+struct QueueInternal<ChannelId, MSG, const STATIC_SIZE: usize> {
+    awaker: Option<Arc<dyn Awaker>>,
+    queue: DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>,
+}
+
+impl<ChannelId, MSG, const STATIC_SIZE: usize> Default
+    for QueueInternal<ChannelId, MSG, STATIC_SIZE>
+{
+    fn default() -> Self {
+        Self {
+            awaker: None,
+            queue: DynamicDeque::default(),
+        }
+    }
+}
+
+impl<ChannelId, MSG, const STATIC_SIZE: usize> QueueInternal<ChannelId, MSG, STATIC_SIZE> {
+    pub fn push_safe(&mut self, source: BusEventSource<ChannelId>, msg: MSG) -> usize {
+        self.queue.push_back_safe((source, msg));
+        let after = self.queue.len();
+        if after == 1 {
+            if let Some(awaker) = self.awaker.as_ref() {
+                awaker.awake();
+            }
+        }
+        after
+    }
+
+    pub fn push_generic(
+        &mut self,
+        safe: bool,
+        source: BusEventSource<ChannelId>,
+        msg: MSG,
+    ) -> Result<usize, ()> {
+        self.queue.push_back(safe, (source, msg)).map_err(|_| ())?;
+        let after = self.queue.len();
+        if after == 1 {
+            if let Some(awaker) = self.awaker.as_ref() {
+                awaker.awake();
+            }
+        }
+        Ok(after)
+    }
+
+    pub fn pop_front(&mut self) -> Option<(BusEventSource<ChannelId>, MSG)> {
+        self.queue.pop_front()
+    }
+}
+
+#[derive(Default)]
 struct SharedBusQueue<ChannelId, MSG, const STATIC_SIZE: usize> {
-    queue: Arc<
-        Mutex<(
-            Option<Arc<dyn Awaker>>,
-            DynamicDeque<(BusEventSource<ChannelId>, MSG), STATIC_SIZE>,
-        )>,
-    >,
+    queue: Arc<Mutex<QueueInternal<ChannelId, MSG, STATIC_SIZE>>>,
 }
 
 impl<ChannelId, MSG, const STATIC_SIZE: usize> Clone
@@ -38,15 +83,7 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> Clone
 
 impl<ChannelId, MSG, const STATIC_SIZE: usize> SharedBusQueue<ChannelId, MSG, STATIC_SIZE> {
     fn send_safe(&self, source: BusEventSource<ChannelId>, msg: MSG) -> usize {
-        let mut slot = self.queue.lock();
-        slot.1.push_back_safe((source, msg));
-        let after = slot.1.len();
-        if after == 1 {
-            if let Some(awaker) = slot.0.as_ref() {
-                awaker.awake();
-            }
-        }
-        after
+        self.queue.lock().push_safe(source, msg)
     }
 
     fn send(
@@ -55,25 +92,18 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> SharedBusQueue<ChannelId, MSG, ST
         safe: bool,
         msg: MSG,
     ) -> Result<usize, BusLegSenderErr> {
-        let mut slot = self.queue.lock();
-        slot.1
-            .push_back(safe, (source, msg))
-            .map_err(|_| BusLegSenderErr::ChannelFull)?;
-        let after = slot.1.len();
-        if after == 1 {
-            if let Some(awaker) = slot.0.as_ref() {
-                awaker.awake();
-            }
-        }
-        Ok(after)
+        self.queue
+            .lock()
+            .push_generic(safe, source, msg)
+            .map_err(|_| BusLegSenderErr::ChannelFull)
     }
 
     fn recv(&self) -> Option<(BusEventSource<ChannelId>, MSG)> {
-        self.queue.lock().1.pop_front()
+        self.queue.lock().pop_front()
     }
 
     fn set_awaker(&self, awaker: Arc<dyn Awaker>) {
-        self.queue.lock().0 = Some(awaker);
+        self.queue.lock().awaker = Some(awaker);
     }
 }
 
@@ -165,7 +195,7 @@ pub fn create_bus_leg<ChannelId, MSG, const STATIC_SIZE: usize>() -> (
     BusLegReceiver<ChannelId, MSG, STATIC_SIZE>,
 ) {
     let queue = SharedBusQueue {
-        queue: Arc::new(Mutex::new((None, DynamicDeque::default()))),
+        queue: Default::default(),
     };
     let sender = BusLegSender {
         queue: queue.clone(),

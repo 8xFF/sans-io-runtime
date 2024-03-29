@@ -106,11 +106,9 @@ impl<
         if matches!(self.state, State::Shutdowned) {
             return None;
         }
-        if matches!(self.state, State::Shutdowning) {
-            if self.worker_threads.iter().all(|w| w.stats.tasks() == 0) {
-                self.state = State::Shutdowned;
-                return None;
-            }
+        if matches!(self.state, State::Shutdowning) && self.count_running_workers() == 0 {
+            self.state = State::Shutdowned;
+            return None;
         }
 
         for i in 0..self.worker_threads.len() {
@@ -194,5 +192,12 @@ impl<
 
     pub fn pop_event(&mut self) -> Option<ExtOut> {
         self.output.pop_front()
+    }
+
+    fn count_running_workers(&self) -> usize {
+        self.worker_threads
+            .iter()
+            .filter(|w| w.stats.tasks() > 0)
+            .count()
     }
 }
