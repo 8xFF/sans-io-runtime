@@ -1,7 +1,4 @@
-use std::{
-    marker::PhantomData,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use sans_io_runtime::{
     backend::MioBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutput,
@@ -23,24 +20,16 @@ enum Type1ExtOut {}
 enum Type2ExtOut {}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-enum Type1Channel {
-    A,
-}
+enum Type1Channel {}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-enum Type2Channel {
-    B,
-}
+enum Type2Channel {}
 
 #[derive(Clone)]
-enum Type1Event {
-    A,
-}
+enum Type1Event {}
 
 #[derive(Clone)]
-enum Type2Event {
-    B,
-}
+enum Type2Event {}
 
 #[derive(Debug, Clone)]
 struct Type1Cfg {}
@@ -80,12 +69,12 @@ enum TestEvent {
 
 #[derive(Debug)]
 struct Task1 {
-    cfg: Type1Cfg,
+    _cfg: Type1Cfg,
 }
 
 impl Task1 {
-    fn new(cfg: Type1Cfg) -> Self {
-        Self { cfg }
+    fn new(_cfg: Type1Cfg) -> Self {
+        Self { _cfg }
     }
 }
 
@@ -114,12 +103,12 @@ impl Task<Type1Channel, Type1Event> for Task1 {
 
 #[derive(Debug)]
 struct Task2 {
-    cfg: Type2Cfg,
+    _cfg: Type2Cfg,
 }
 
 impl Task2 {
-    fn new(cfg: Type2Cfg) -> Self {
-        Self { cfg }
+    fn new(_cfg: Type2Cfg) -> Self {
+        Self { _cfg }
     }
 }
 
