@@ -39,7 +39,12 @@ impl WhepTask {
             .set_rtp_mode(true)
             .set_ice_lite(true)
             .set_dtls_cert(dtls_cert);
-        let ice_ufrag = rtc_config.local_ice_credentials().ufrag.clone();
+        let ice_ufrag = rtc_config
+            .local_ice_credentials()
+            .as_ref()
+            .expect("should have ice credentials")
+            .ufrag
+            .clone();
         let mut rtc = rtc_config.build();
         rtc.direct_api().enable_twcc_feedback();
 
