@@ -142,7 +142,7 @@ pub mod tun {
         #[cfg(target_os = "linux")]
         config.queues(queues);
         #[cfg(not(target_os = "linux"))]
-        log::info!("Ignoring queues on non-linux platform, setting as {queues} but overrided to 1");
+        log::info!("Ignoring queues on non-linux platform, setting as {queues} but override to 1");
 
         let device = tun::create(&config).expect("Should create tun device");
         device
