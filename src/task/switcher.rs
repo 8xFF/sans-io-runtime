@@ -57,6 +57,7 @@ impl TaskQueue {
         Some(res)
     }
 
+    #[allow(dead_code)]
     pub fn flag_all(&mut self) {
         self.bits.set_all(true);
     }

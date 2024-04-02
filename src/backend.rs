@@ -67,11 +67,11 @@ pub trait BackendOwner {
 
 #[cfg(feature = "tun-tap")]
 pub mod tun {
-    use std::{net::Ipv4Addr, process::Command};
+    use std::net::Ipv4Addr;
 
     use tun::{
         platform::{posix::Fd, Device},
-        Device as _, IntoAddress,
+        IntoAddress,
     };
 
     pub struct TunFd {
@@ -151,6 +151,9 @@ pub mod tun {
 
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
+            use std::process::Command;
+            use tun::Device as _;
+
             let ip_addr = device.address().expect("Should have address");
             //let netmask = device.netmask().expect("Should have netmask");
 
