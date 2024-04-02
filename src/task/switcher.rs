@@ -57,7 +57,6 @@ impl TaskQueue {
         Some(res)
     }
 
-    #[allow(dead_code)]
     pub fn flag_all(&mut self) {
         self.bits.set_all(true);
     }
@@ -148,6 +147,10 @@ impl TaskSwitcher {
 
     pub fn queue_flag_task(&mut self, index: usize) {
         self.queue.flag_task(index);
+    }
+
+    pub fn queue_flag_all(&mut self) {
+        self.queue.flag_all();
     }
 
     pub fn looper_current(&mut self, now: Instant) -> Option<usize> {
