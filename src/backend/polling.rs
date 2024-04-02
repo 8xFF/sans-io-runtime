@@ -29,6 +29,7 @@ type Token = usize;
 enum SocketType {
     Waker(),
     #[cfg(feature = "udp")]
+    #[allow(dead_code)]
     Udp(UdpSocket, SocketAddr, Owner),
     #[cfg(feature = "tun-tap")]
     Tun(super::tun::TunFd, Owner),
