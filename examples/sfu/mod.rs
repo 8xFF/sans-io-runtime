@@ -7,8 +7,8 @@ use std::{
 
 use derive_more::Display;
 use sans_io_runtime::{
-    NetIncoming, NetOutgoing, Owner, Task, TaskGroup, TaskGroupInput, TaskGroupOutput,
-    TaskGroupOutputsState, TaskInput, TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    NetIncoming, NetOutgoing, Owner, Task, TaskGroup, TaskGroupInput, TaskGroupOutput, TaskInput,
+    TaskOutput, TaskSwitcher, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 use str0m::{
     change::DtlsCert,
@@ -89,12 +89,11 @@ pub enum SCfg {
 pub struct SfuWorker {
     worker: u16,
     dtls_cert: DtlsCert,
-    whip_group: TaskGroup<ChannelId, SfuEvent, WhipTask, 128>,
-    whep_group: TaskGroup<ChannelId, SfuEvent, WhepTask, 128>,
+    whip_group: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent, WhipTask, 128>,
+    whep_group: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent, WhepTask, 128>,
     output: VecDeque<WorkerInnerOutput<'static, ExtOut, ChannelId, SfuEvent, SCfg>>,
     shared_udp: SharedUdpPort<TaskId>,
-    last_input: Option<u16>,
-    groups_output: TaskGroupOutputsState<2>,
+    switcher: TaskSwitcher,
 }
 
 impl SfuWorker {
@@ -127,7 +126,8 @@ impl SfuWorker {
         log::info!("Whip endpoint connect request: {}", http_auth);
         let channel = Self::channel_build(&http_auth);
         let task = WhipTask::build(
-            self.shared_udp.get_addr().expect(""),
+            self.shared_udp.get_backend_slot().expect(""),
+            self.shared_udp.get_backend_addr().expect(""),
             self.dtls_cert.clone(),
             channel,
             &String::from_utf8_lossy(&req.body),
@@ -174,7 +174,8 @@ impl SfuWorker {
         log::info!("Whep endpoint connect request: {}", http_auth);
         let channel = Self::channel_build(&http_auth);
         let task = WhepTask::build(
-            self.shared_udp.get_addr().expect(""),
+            self.shared_udp.get_backend_slot().expect(""),
+            self.shared_udp.get_backend_addr().expect(""),
             self.dtls_cert.clone(),
             channel,
             &String::from_utf8_lossy(&req.body),
@@ -221,16 +222,18 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
     fn build(worker: u16, cfg: ICfg) -> Self {
         Self {
             worker,
-            dtls_cert: DtlsCert::new(),
+            dtls_cert: DtlsCert::new_openssl(),
             whip_group: TaskGroup::new(worker),
             whep_group: TaskGroup::new(worker),
             output: VecDeque::from([WorkerInnerOutput::Task(
                 Owner::worker(worker),
-                TaskOutput::Net(NetOutgoing::UdpListen(cfg.udp_addr)),
+                TaskOutput::Net(NetOutgoing::UdpListen {
+                    addr: cfg.udp_addr,
+                    reuse: false,
+                }),
             )]),
             shared_udp: SharedUdpPort::default(),
-            last_input: None,
-            groups_output: TaskGroupOutputsState::default(),
+            switcher: TaskSwitcher::new(2),
         }
     }
     fn worker_index(&self) -> u16 {
@@ -246,7 +249,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             }
         }
     }
-    fn on_input_tick<'a>(
+    fn on_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
@@ -254,10 +257,11 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             return Some(e.into());
         }
 
+        let switcher = &mut self.switcher;
         loop {
-            match self.groups_output.current()? {
-                WhipTask::TYPE => match self.whip_group.on_input_tick(now) {
-                    Some(res) => {
+            match switcher.looper_current(now)? as u16 {
+                WhipTask::TYPE => {
+                    if let Some(res) = switcher.looper_process(self.whip_group.on_tick(now)) {
                         if matches!(res.1, TaskOutput::Destroy) {
                             self.shared_udp.remove_task(TaskId::Whip(
                                 res.0.task_index().expect("Should have task"),
@@ -265,29 +269,23 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                         }
                         return Some(res.into());
                     }
-                    None => {
-                        self.groups_output.finish_current();
-                    }
-                },
-                WhepTask::TYPE => match self.whep_group.on_input_tick(now) {
-                    Some(res) => {
+                }
+                WhepTask::TYPE => {
+                    if let Some(res) = switcher.looper_process(self.whep_group.on_tick(now)) {
                         if matches!(res.1, TaskOutput::Destroy) {
-                            self.shared_udp.remove_task(TaskId::Whep(
+                            self.shared_udp.remove_task(TaskId::Whip(
                                 res.0.task_index().expect("Should have task"),
                             ));
                         }
                         return Some(res.into());
                     }
-                    None => {
-                        self.groups_output.finish_current();
-                    }
-                },
+                }
                 _ => panic!("Unknown task type"),
             }
         }
     }
 
-    fn on_input_event<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, ExtIn, ChannelId, SfuEvent>,
@@ -296,33 +294,32 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
             WorkerInnerInput::Task(owner, event) => match event {
                 TaskInput::Net(NetIncoming::UdpListenResult { bind: _, result }) => {
                     log::info!("UdpListenResult: {:?}", result);
-                    let addr = result.as_ref().expect("Should listen shared port ok");
-                    self.shared_udp.set_addr(*addr);
-                    self.last_input = None;
+                    let (addr, slot) = result.as_ref().expect("Should listen shared port ok");
+                    self.shared_udp.set_backend_info(*addr, *slot);
                     None
                 }
-                TaskInput::Net(NetIncoming::UdpPacket { from, to, data }) => {
+                TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }) => {
                     match self.shared_udp.map_remote(from, data) {
                         Some(TaskId::Whip(index)) => {
-                            self.last_input = Some(WhipTask::TYPE);
+                            self.switcher.queue_flag_task(WhipTask::TYPE as usize);
                             let owner = Owner::task(self.worker, WhipTask::TYPE, index);
-                            let TaskGroupOutput(owner, output) = self.whip_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whip_group.on_event(
                                 now,
                                 TaskGroupInput(
                                     owner,
-                                    TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+                                    TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }),
                                 ),
                             )?;
                             Some(WorkerInnerOutput::Task(owner, output))
                         }
                         Some(TaskId::Whep(index)) => {
-                            self.last_input = Some(WhepTask::TYPE);
+                            self.switcher.queue_flag_task(WhepTask::TYPE as usize);
                             let owner = Owner::task(self.worker, WhepTask::TYPE, index);
-                            let TaskGroupOutput(owner, output) = self.whep_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whep_group.on_event(
                                 now,
                                 TaskGroupInput(
                                     owner,
-                                    TaskInput::Net(NetIncoming::UdpPacket { from, to, data }),
+                                    TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }),
                                 ),
                             )?;
                             Some(WorkerInnerOutput::Task(owner, output))
@@ -334,17 +331,19 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                     }
                 }
                 TaskInput::Bus(channel, event) => {
-                    self.last_input = owner.group_id();
+                    self.switcher.queue_flag_task(
+                        owner.group_id().expect("Should have bus group id") as usize,
+                    );
                     match owner.group_id() {
                         Some(WhipTask::TYPE) => {
-                            let TaskGroupOutput(owner, output) = self.whip_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whip_group.on_event(
                                 now,
                                 TaskGroupInput(owner, TaskInput::Bus(channel, event)),
                             )?;
                             Some(WorkerInnerOutput::Task(owner, output))
                         }
                         Some(WhepTask::TYPE) => {
-                            let TaskGroupOutput(owner, output) = self.whep_group.on_input_event(
+                            let TaskGroupOutput(owner, output) = self.whep_group.on_event(
                                 now,
                                 TaskGroupInput(owner, TaskInput::Bus(channel, event)),
                             )?;
@@ -353,22 +352,68 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for SfuWorker {
                         _ => None,
                     }
                 }
+                _ => None,
             },
-            WorkerInnerInput::Ext(_ext) => {
-                self.last_input = None;
-                None
-            }
+            WorkerInnerInput::Ext(_ext) => None,
         }
     }
 
-    fn pop_last_input<'a>(
+    fn pop_output<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
-        match self.last_input? {
-            WhipTask::TYPE => self.whip_group.pop_last_input(now).map(|o| o.into()),
-            WhepTask::TYPE => self.whep_group.pop_last_input(now).map(|o| o.into()),
-            _ => None,
+        let switcher = &mut self.switcher;
+        while let Some(current) = switcher.queue_current() {
+            match current as u16 {
+                WhipTask::TYPE => {
+                    if let Some(out) =
+                        switcher.queue_process(self.whip_group.pop_output(now).map(|o| o.into()))
+                    {
+                        return Some(out);
+                    }
+                }
+                WhepTask::TYPE => {
+                    if let Some(out) =
+                        switcher.queue_process(self.whep_group.pop_output(now).map(|o| o.into()))
+                    {
+                        return Some(out);
+                    }
+                }
+                _ => panic!("Should not called"),
+            }
+        }
+        None
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, SfuEvent, SCfg>> {
+        let switcher = &mut self.switcher;
+        loop {
+            match switcher.looper_current(now)? as u16 {
+                WhipTask::TYPE => {
+                    if let Some(res) = switcher.looper_process(self.whip_group.shutdown(now)) {
+                        if matches!(res.1, TaskOutput::Destroy) {
+                            self.shared_udp.remove_task(TaskId::Whip(
+                                res.0.task_index().expect("Should have task"),
+                            ));
+                        }
+                        return Some(res.into());
+                    }
+                }
+                WhepTask::TYPE => {
+                    if let Some(res) = switcher.looper_process(self.whep_group.shutdown(now)) {
+                        if matches!(res.1, TaskOutput::Destroy) {
+                            self.shared_udp.remove_task(TaskId::Whip(
+                                res.0.task_index().expect("Should have task"),
+                            ));
+                        }
+                        return Some(res.into());
+                    }
+                }
+                _ => panic!("Unknown task type"),
+            }
         }
     }
 }

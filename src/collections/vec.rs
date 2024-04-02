@@ -131,6 +131,14 @@ impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
         }
     }
 
+    pub fn last(&self) -> Option<&T> {
+        if let Some(t) = self.heap.last() {
+            Some(t)
+        } else {
+            self.stack.last()
+        }
+    }
+
     /// Check if the vector is empty.
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()

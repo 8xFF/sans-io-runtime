@@ -7,14 +7,17 @@ mod local_hub;
 pub use leg::*;
 pub use local_hub::*;
 
-pub enum BusEvent<ChannelId, MSG> {
-    ChannelSubscribe(ChannelId),
-    ChannelUnsubscribe(ChannelId),
+use crate::backend::Awaker;
+
+#[derive(Debug)]
+pub enum BusEvent<ChannelIn, ChannelOut, MSG> {
+    ChannelSubscribe(ChannelIn),
+    ChannelUnsubscribe(ChannelIn),
     /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
-    ChannelPublish(ChannelId, bool, MSG),
+    ChannelPublish(ChannelOut, bool, MSG),
 }
 
-impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
+impl<ChannelIn, ChannelOut, MSG> BusEvent<ChannelIn, ChannelOut, MSG> {
     pub fn high_priority(&self) -> bool {
         match self {
             Self::ChannelSubscribe(_) => true,
@@ -23,9 +26,13 @@ impl<ChannelId, MSG> BusEvent<ChannelId, MSG> {
         }
     }
 
-    pub fn convert_into<NChannelId: From<ChannelId>, NMSG: From<MSG>>(
+    pub fn convert_into<
+        NChannelIn: From<ChannelIn>,
+        NChannelOut: From<ChannelOut>,
+        NMSG: From<MSG>,
+    >(
         self,
-    ) -> BusEvent<NChannelId, NMSG> {
+    ) -> BusEvent<NChannelIn, NChannelOut, NMSG> {
         match self {
             Self::ChannelSubscribe(channel) => BusEvent::ChannelSubscribe(channel.into()),
             Self::ChannelUnsubscribe(channel) => BusEvent::ChannelUnsubscribe(channel.into()),
@@ -102,8 +109,16 @@ impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
 {
     fn broadcast(&self, safe: bool, msg: MSG) {
         let legs = self.legs.read();
-        for leg in &*legs {
-            let _ = leg.send(BusEventSource::External, safe, msg.clone());
+        match legs.len() {
+            0 => log::warn!("No leg to broadcast"),
+            1 => {
+                let _ = legs[0].send(BusEventSource::External, safe, msg);
+            }
+            _ => {
+                for leg in &*legs {
+                    let _ = leg.send(BusEventSource::External, safe, msg.clone());
+                }
+            }
         }
     }
 }
@@ -122,6 +137,10 @@ impl<ChannelId, MSG, const STACK_SIZE: usize> BusWorker<ChannelId, MSG, STACK_SI
 
     pub fn recv(&self) -> Option<(BusEventSource<ChannelId>, MSG)> {
         self.receiver.recv()
+    }
+
+    pub fn set_awaker(&self, awaker: Arc<dyn Awaker>) {
+        self.receiver.set_awaker(awaker);
     }
 }
 
@@ -144,8 +163,16 @@ impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
 {
     fn broadcast(&self, safe: bool, msg: MSG) {
         let legs = self.legs.read();
-        for leg in &*legs {
-            let _ = leg.send(BusEventSource::Broadcast(self.leg_index), safe, msg.clone());
+        match legs.len() {
+            0 => log::warn!("No leg to broadcast"),
+            1 => {
+                let _ = legs[0].send(BusEventSource::External, safe, msg);
+            }
+            _ => {
+                for leg in &*legs {
+                    let _ = leg.send(BusEventSource::External, safe, msg.clone());
+                }
+            }
         }
     }
 }
@@ -175,12 +202,20 @@ impl<ChannelId: Debug + Copy + Hash + PartialEq + Eq, MSG: Clone, const STACK_SI
         let legs = self.legs.read();
         let channels = self.channels.read();
         if let Some(entry) = channels.get(&channel) {
-            for &leg_index in entry {
-                let _ = legs[leg_index].send(
+            if entry.len() == 1 {
+                let _ = legs[entry[0]].send(
                     BusEventSource::Channel(self.leg_index, channel),
                     safe,
-                    msg.clone(),
+                    msg,
                 );
+            } else {
+                for &leg_index in entry {
+                    let _ = legs[leg_index].send(
+                        BusEventSource::Channel(self.leg_index, channel),
+                        safe,
+                        msg.clone(),
+                    );
+                }
             }
         }
     }

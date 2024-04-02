@@ -6,20 +6,28 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-derive_more = "0.99.17"
+derive_more = "0.99"
 heapless = "0.8"
 log = "0.4"
 mio = { version = "0.8", features = ["os-poll", "net"], optional = true }
 parking_lot = "0.12"
+polling = { version = "3.5", optional = true }
+socket2 = { version = "0.5", optional = true, features = ["all"] }
+tun = { version = "0.6", optional = true }
 
 [dev-dependencies]
 mockall = "0.12.1"
 env_logger = "0.11"
 tiny_http = "0.12"
-str0m = "0.4.1"
+str0m = "0.5"
 faster-stun = "1.0.2"
 convert-enum = "0.1.0"
+signal-hook = "0.3.17"
 
 [features]
-default = ["mio-backend"]
-mio-backend = ["mio"]
+default = ["poll-backend", "polling-backend", "udp", "tun-tap"]
+tun-tap = ["tun", "mio/os-ext"]
+udp = []
+mio-backend = ["mio", "socket2"]
+polling-backend = ["polling", "socket2"]
+poll-backend = ["socket2"]

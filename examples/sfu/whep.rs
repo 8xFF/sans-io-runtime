@@ -6,12 +6,13 @@ use sans_io_runtime::{
 };
 use str0m::{
     change::{DtlsCert, SdpOffer},
+    ice::IceCreds,
     media::{KeyframeRequestKind, MediaKind, Mid},
     net::{Protocol, Receive},
-    Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    Candidate, Event as Str0mEvent, IceConnectionState, Input, Output, Rtc,
 };
 
-use super::{ChannelId, SfuEvent};
+use super::{ChannelId, ExtIn, ExtOut, SfuEvent};
 
 pub struct WhepTaskBuildResult {
     pub task: WhepTask,
@@ -20,17 +21,20 @@ pub struct WhepTaskBuildResult {
 }
 
 pub struct WhepTask {
+    backend_slot: usize,
+    backend_addr: SocketAddr,
     timeout: Option<Instant>,
     rtc: Rtc,
     audio_mid: Option<Mid>,
     video_mid: Option<Mid>,
     channel_id: u64,
-    output: DynamicDeque<TaskOutput<'static, ChannelId, SfuEvent>, 16>,
+    output: DynamicDeque<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>, 16>,
 }
 
 impl WhepTask {
     pub fn build(
-        addr: SocketAddr,
+        backend_slot: usize,
+        backend_addr: SocketAddr,
         dtls_cert: DtlsCert,
         channel: u64,
         sdp: &str,
@@ -38,13 +42,21 @@ impl WhepTask {
         let rtc_config = Rtc::builder()
             .set_rtp_mode(true)
             .set_ice_lite(true)
-            .set_dtls_cert(dtls_cert);
-        let ice_ufrag = rtc_config.local_ice_credentials().ufrag.clone();
+            .set_dtls_cert(dtls_cert)
+            .set_local_ice_credentials(IceCreds::new());
+
+        let ice_ufrag = rtc_config
+            .local_ice_credentials()
+            .as_ref()
+            .expect("should have ice credentials")
+            .ufrag
+            .clone();
+
         let mut rtc = rtc_config.build();
         rtc.direct_api().enable_twcc_feedback();
 
         rtc.add_local_candidate(
-            Candidate::host(addr, Protocol::Udp).expect("Should create candidate"),
+            Candidate::host(backend_addr, Protocol::Udp).expect("Should create candidate"),
         );
 
         let offer = SdpOffer::from_sdp_string(&sdp).expect("Should parse offer");
@@ -53,6 +65,8 @@ impl WhepTask {
             .accept_offer(offer)
             .expect("Should accept offer");
         let instance = Self {
+            backend_addr,
+            backend_slot,
             timeout: None,
             rtc,
             audio_mid: None,
@@ -72,7 +86,7 @@ impl WhepTask {
         &mut self,
         now: Instant,
         has_input: bool,
-    ) -> Option<TaskOutput<'static, ChannelId, SfuEvent>> {
+    ) -> Option<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         if let Some(o) = self.output.pop_front() {
             return Some(o);
         }
@@ -93,15 +107,14 @@ impl WhepTask {
                     return None;
                 }
                 Output::Transmit(send) => {
-                    return TaskOutput::Net(NetOutgoing::UdpPacket {
-                        from: send.source,
+                    return Some(TaskOutput::Net(NetOutgoing::UdpPacket {
+                        slot: self.backend_slot,
                         to: send.destination,
                         data: Buffer::Vec(send.contents.into()),
-                    })
-                    .into();
+                    }));
                 }
                 Output::Event(e) => match e {
-                    Event::Connected => {
+                    Str0mEvent::Connected => {
                         log::info!("WhepServerTask connected");
                         self.output
                             .push_back_safe(TaskOutput::Bus(BusEvent::ChannelSubscribe(
@@ -119,7 +132,7 @@ impl WhepTask {
                             )));
                         return self.output.pop_front();
                     }
-                    Event::MediaAdded(media) => {
+                    Str0mEvent::MediaAdded(media) => {
                         log::info!("WhepServerTask media added: {:?}", media);
                         if media.kind == MediaKind::Audio {
                             self.audio_mid = Some(media.mid);
@@ -127,7 +140,7 @@ impl WhepTask {
                             self.video_mid = Some(media.mid);
                         }
                     }
-                    Event::IceConnectionStateChange(state) => match state {
+                    Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
                             self.output.push_back_safe(TaskOutput::Bus(
                                 BusEvent::ChannelUnsubscribe(ChannelId::ConsumeAudio(
@@ -144,11 +157,11 @@ impl WhepTask {
                         }
                         _ => {}
                     },
-                    Event::KeyframeRequest(req) => {
+                    Str0mEvent::KeyframeRequest(req) => {
                         return Some(TaskOutput::Bus(BusEvent::ChannelPublish(
                             ChannelId::PublishVideo(self.channel_id),
                             false,
-                            SfuEvent::RequestKeyFrame(req.kind),
+                            SfuEvent::RequestKeyFrame(req.kind).into(),
                         )));
                     }
                     _ => {}
@@ -160,12 +173,15 @@ impl WhepTask {
     }
 }
 
-impl Task<ChannelId, SfuEvent> for WhepTask {
+impl Task<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent> for WhepTask {
     /// The type identifier for the task.
     const TYPE: u16 = 1;
 
     /// Called on each tick of the task.
-    fn on_tick<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, SfuEvent>> {
+    fn on_tick<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         let timeout = self.timeout?;
         if now < timeout {
             return None;
@@ -180,17 +196,22 @@ impl Task<ChannelId, SfuEvent> for WhepTask {
     }
 
     /// Called when an input event is received for the task.
-    fn on_input<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
-        input: TaskInput<'a, ChannelId, SfuEvent>,
-    ) -> Option<TaskOutput<'a, ChannelId, SfuEvent>> {
+        input: TaskInput<'a, ExtIn, ChannelId, SfuEvent>,
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         match input {
             TaskInput::Net(event) => match event {
-                NetIncoming::UdpPacket { from, to, data } => {
+                NetIncoming::UdpPacket {
+                    from,
+                    slot: _,
+                    data,
+                } => {
                     if let Err(e) = self.rtc.handle_input(Input::Receive(
                         now,
-                        Receive::new(Protocol::Udp, from, to, data).expect("Should parse udp"),
+                        Receive::new(Protocol::Udp, from, self.backend_addr, data)
+                            .expect("Should parse udp"),
                     )) {
                         log::error!("Error handling udp: {}", e);
                     }
@@ -200,6 +221,7 @@ impl Task<ChannelId, SfuEvent> for WhepTask {
                 NetIncoming::UdpListenResult { .. } => {
                     panic!("Unexpected UdpListenResult");
                 }
+                _ => None,
             },
             TaskInput::Bus(channel, event) => match event {
                 SfuEvent::RequestKeyFrame(_kind) => {
@@ -245,11 +267,32 @@ impl Task<ChannelId, SfuEvent> for WhepTask {
                     }
                 }
             },
+            TaskInput::Ext(_) => None,
         }
     }
 
     /// Retrieves the next output event from the task.
-    fn pop_output<'a>(&mut self, now: Instant) -> Option<TaskOutput<'a, ChannelId, SfuEvent>> {
+    fn pop_output<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
         self.pop_event_inner(now, false)
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+        self.rtc.disconnect();
+        self.output
+            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(
+                ChannelId::ConsumeAudio(self.channel_id),
+            )));
+        self.output
+            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(
+                ChannelId::ConsumeVideo(self.channel_id),
+            )));
+        self.output.push_back_safe(TaskOutput::Destroy);
+        self.pop_event_inner(now, true)
     }
 }

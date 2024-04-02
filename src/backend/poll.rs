@@ -1,19 +1,19 @@
-//! This module contains the implementation of the MioBackend struct, which is a backend for the sans-io-runtime crate.
+//! This module contains the implementation of the PollBackend struct, which is a backend for the sans-io-runtime crate.
 //!
-//! The MioBackend struct provides an implementation of the Backend trait, allowing it to be used as a backend for the sans-io-runtime crate. It uses the Mio library for event-driven I/O operations.
+//! The PollBackend struct provides an implementation of the Backend trait, allowing it to be used as a backend for the sans-io-runtime crate. It uses the Poll library for event-driven I/O operations.
 //!
-//! The MioBackend struct maintains a collection of UDP sockets, handles incoming and outgoing network packets, and provides methods for registering and unregistering owners.
+//! The PollBackend struct maintains a collection of UDP sockets, handles incoming and outgoing network packets, and provides methods for registering and unregistering owners.
 //!
 //! Example usage:
 //!
 //! ```rust
-//! use sans_io_runtime::backend::{Backend, BackendOwner, MioBackend, BackendIncoming};
+//! use sans_io_runtime::backend::{Backend, BackendOwner, PollBackend, BackendIncoming};
 //! use sans_io_runtime::{Owner, Buffer, NetOutgoing};
 //! use std::time::Duration;
 //! use std::net::SocketAddr;
 //!
-//! // Create a MioBackend instance
-//! let mut backend = MioBackend::<8, 64>::default();
+//! // Create a PollBackend instance
+//! let mut backend = PollBackend::<8, 64>::default();
 //!
 //! // Register an owner and bind a UDP socket
 //! backend.on_action(Owner::worker(0), NetOutgoing::UdpListen { addr: SocketAddr::from(([127, 0, 0, 1], 0)), reuse: false });
@@ -33,6 +33,7 @@
 //!         BackendIncoming::Awake => {
 //!             // Handle awake event
 //!         }
+//!         _ => {}
 //!     }
 //! }
 //!
@@ -46,13 +47,14 @@
 //! backend.remove_owner(Owner::worker(0));
 //! ```
 //!
-//! Note: This module assumes that the sans-io-runtime crate and the Mio library are already imported and available.
-use std::{net::SocketAddr, sync::Arc, time::Duration, usize};
-
-use mio::{net::UdpSocket, Events, Interest, Poll, Token, Waker};
+//! Note: This module assumes that the sans-io-runtime crate and the Poll library are already imported and available.
 use socket2::{Domain, Protocol, Socket, Type};
-#[cfg(feature = "tun-tap")]
-use std::io::{Read, Write};
+use std::{
+    net::{SocketAddr, UdpSocket},
+    sync::Arc,
+    time::Duration,
+    usize,
+};
 
 use crate::{
     backend::BackendOwner,
@@ -63,29 +65,25 @@ use crate::{
 
 use super::{Awaker, Backend, BackendIncoming};
 
-const QUEUE_PKT_NUM: usize = 512;
+#[cfg(feature = "tun-tap")]
+use std::io::{Read, Write};
 
 enum SocketType {
-    Waker(),
     #[cfg(feature = "udp")]
-    #[allow(dead_code)]
     Udp(UdpSocket, SocketAddr, Owner),
     #[cfg(feature = "tun-tap")]
     Tun(super::tun::TunFd, Owner),
 }
 
-pub struct MioBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
-    poll: Poll,
-    event_buffer: Events,
-    event_buffer2: heapless::Deque<Token, QUEUE_PKT_NUM>,
+pub struct PollBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
     sockets: DynamicVec<Option<SocketType>, SOCKET_STACK_SIZE>,
     output: DynamicDeque<(BackendIncoming, Owner), QUEUE_STACK_SIZE>,
     cycle_count: u64,
-    awaker: Arc<MioAwaker>,
+    last_poll_socket: Option<usize>,
 }
 
 impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
-    MioBackend<SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
+    PollBackend<SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
 {
     #[cfg(feature = "udp")]
     fn create_udp(addr: SocketAddr, reuse: bool) -> Result<UdpSocket, std::io::Error> {
@@ -111,7 +109,7 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
                 socket
             }
         };
-        Ok(UdpSocket::from_std(socket.into()))
+        Ok(socket.into())
     }
 
     pub fn socket_count(&self) -> usize {
@@ -128,102 +126,89 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
         self.sockets.push_safe(None);
         self.sockets.len() - 1
     }
-    fn pop_cached_event(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
-        if let Some(wait) = self.output.pop_front() {
-            return Some(wait);
+}
+
+impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
+    for PollBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
+{
+    fn default() -> Self {
+        Self {
+            sockets: DynamicVec::default(),
+            output: DynamicDeque::default(),
+            cycle_count: 0,
+            last_poll_socket: None,
         }
-        while !self.event_buffer2.is_empty() {
-            if let Some(token) = self.event_buffer2.front() {
-                let slot_index = token.0;
-                match self.sockets.get_mut(slot_index) {
+    }
+}
+
+impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
+    for PollBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
+{
+    fn create_awaker(&self) -> Arc<dyn Awaker> {
+        Arc::new(PollAwaker)
+    }
+
+    fn poll_incoming(&mut self, timeout: Duration) {
+        if !self.output.is_empty() {
+            return;
+        }
+        self.cycle_count += 1;
+        // We need manual awake for now
+        self.output
+            .push_back_safe((BackendIncoming::Awake, Owner::worker(0)));
+        std::thread::sleep(timeout);
+    }
+
+    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
+        if let Some(out) = self.output.pop_front() {
+            return Some(out);
+        }
+        if self.sockets.is_empty() {
+            return None;
+        }
+
+        let mut last_poll_socket = self.last_poll_socket.unwrap_or(0);
+        loop {
+            if let Some(Some(slot)) = self.sockets.get_mut(last_poll_socket) {
+                match slot {
                     #[cfg(feature = "udp")]
-                    Some(Some(SocketType::Udp(socket, _, owner))) => {
-                        self.event_buffer2.pop_front();
-                        if let Ok((buffer_size, addr)) = socket.recv_from(buf) {
+                    SocketType::Udp(socket, _addr, owner) => {
+                        if let Ok((size, remote)) = socket.recv_from(buf) {
                             return Some((
                                 BackendIncoming::UdpPacket {
-                                    from: addr,
-                                    slot: slot_index,
-                                    len: buffer_size,
+                                    slot: last_poll_socket,
+                                    from: remote,
+                                    len: size,
                                 },
                                 *owner,
                             ));
-                        } else {
-                            self.event_buffer2.pop_front();
                         }
                     }
-                    Some(Some(SocketType::Waker())) => {
-                        self.event_buffer2.pop_front();
-                        return Some((BackendIncoming::Awake, Owner::worker(0)));
-                        //TODO dont use 0
-                    }
                     #[cfg(feature = "tun-tap")]
-                    Some(Some(SocketType::Tun(fd, owner))) => {
+                    SocketType::Tun(fd, owner) => {
                         if fd.read {
                             if let Ok(size) = fd.fd.read(buf) {
                                 return Some((
                                     BackendIncoming::TunPacket {
-                                        slot: slot_index,
+                                        slot: last_poll_socket,
                                         len: size,
                                     },
                                     *owner,
                                 ));
                             }
                         }
-                        self.event_buffer2.pop_front();
-                    }
-                    Some(None) | None => {
-                        self.event_buffer2.pop_front();
                     }
                 }
             }
-        }
 
+            if last_poll_socket == self.sockets.len() - 1 {
+                break;
+            } else {
+                last_poll_socket += 1;
+            }
+        }
+        self.last_poll_socket = None;
         None
-    }
-}
-
-impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
-    for MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
-{
-    fn default() -> Self {
-        let poll = Poll::new().expect("should create mio-poll");
-        let waker = Waker::new(poll.registry(), Token(0)).expect("should create mio-waker");
-        Self {
-            poll,
-            event_buffer: Events::with_capacity(QUEUE_PKT_NUM),
-            event_buffer2: heapless::Deque::new(),
-            sockets: DynamicVec::from([Some(SocketType::Waker())]),
-            output: DynamicDeque::default(),
-            cycle_count: 0,
-            awaker: Arc::new(MioAwaker { waker }),
-        }
-    }
-}
-
-impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
-    for MioBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
-{
-    fn create_awaker(&self) -> Arc<dyn Awaker> {
-        self.awaker.clone()
-    }
-
-    fn poll_incoming(&mut self, timeout: Duration) {
-        self.cycle_count += 1;
-        if let Err(e) = self.poll.poll(&mut self.event_buffer, Some(timeout)) {
-            log::error!("Mio poll error {:?}", e);
-            return;
-        }
-
-        for event in self.event_buffer.iter() {
-            self.event_buffer2
-                .push_back(event.token())
-                .expect("Should not full");
-        }
-    }
-
-    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
-        self.pop_cached_event(buf)
     }
 
     fn finish_outgoing_cycle(&mut self) {}
@@ -232,26 +217,17 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
 }
 
 impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
-    for MioBackend<SOCKET_LIMIT, QUEUE_SIZE>
+    for PollBackend<SOCKET_LIMIT, QUEUE_SIZE>
 {
     fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
             #[cfg(feature = "udp")]
             NetOutgoing::UdpListen { addr, reuse } => {
-                log::info!("MioBackend: UdpListen {addr}, reuse: {reuse}");
+                log::info!("PollBackend: UdpListen {addr}, reuse: {reuse}");
                 match Self::create_udp(addr, reuse) {
-                    Ok(mut socket) => {
+                    Ok(socket) => {
                         let local_addr = socket.local_addr().expect("should access udp local_addr");
                         let slot = self.select_slot();
-                        if let Err(e) = self.poll.registry().register(
-                            &mut socket,
-                            Token(slot),
-                            Interest::READABLE,
-                        ) {
-                            log::error!("Mio register error {:?}", e);
-                            return;
-                        }
-
                         self.output.push_back_safe((
                             BackendIncoming::UdpListenResult {
                                 bind: addr,
@@ -263,7 +239,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                             Some(SocketType::Udp(socket, local_addr, owner));
                     }
                     Err(e) => {
-                        log::error!("Mio bind error {:?}", e);
+                        log::error!("Poll bind error {:?}", e);
                         self.output.push_back_safe((
                             BackendIncoming::UdpListenResult {
                                 bind: addr,
@@ -277,10 +253,7 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
             #[cfg(feature = "udp")]
             NetOutgoing::UdpUnlisten { slot } => {
                 if let Some(slot) = self.sockets.get_mut(slot) {
-                    if let Some(SocketType::Udp(socket, _, _)) = slot {
-                        if let Err(e) = self.poll.registry().deregister(socket) {
-                            log::error!("Mio deregister error {:?}", e);
-                        }
+                    if let Some(SocketType::Udp(_socket, _, _)) = slot {
                         *slot = None;
                     }
                 }
@@ -290,13 +263,13 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
                         if let Err(e) = socket.send_to(&data, to) {
-                            log::error!("Mio send_to error {:?}", e);
+                            log::error!("Poll send_to error {:?}", e);
                         }
                     } else {
-                        log::error!("Mio send_to error: no socket for {:?}", to);
+                        log::error!("Poll send_to error: no socket for {}", slot);
                     }
                 } else {
-                    log::error!("Mio send_to error: no socket for {:?}", to);
+                    log::error!("Poll send_to error: no socket for {}", slot);
                 }
             }
             #[cfg(feature = "udp")]
@@ -317,41 +290,15 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
             }
             #[cfg(feature = "tun-tap")]
             NetOutgoing::TunBind { fd } => {
-                use mio::unix::SourceFd;
-                use std::os::unix::io::AsRawFd;
-
                 let slot = self.select_slot();
-                if fd.read {
-                    if let Err(e) = self.poll.registry().register(
-                        &mut SourceFd(&fd.fd.as_raw_fd()),
-                        Token(slot),
-                        Interest::READABLE,
-                    ) {
-                        log::error!("Mio register error {:?}", e);
-                        return;
-                    }
-                }
-
                 self.output
                     .push_back_safe((BackendIncoming::TunBindResult { result: Ok(slot) }, owner));
                 *self.sockets.get_mut_or_panic(slot) = Some(SocketType::Tun(fd, owner));
             }
             #[cfg(feature = "tun-tap")]
             NetOutgoing::TunUnbind { slot } => {
-                use mio::unix::SourceFd;
-                use std::os::unix::io::AsRawFd;
-
                 if let Some(slot) = self.sockets.get_mut(slot) {
-                    if let Some(SocketType::Tun(fd, _)) = slot {
-                        if fd.read {
-                            if let Err(e) = self
-                                .poll
-                                .registry()
-                                .deregister(&mut SourceFd(&fd.fd.as_raw_fd()))
-                            {
-                                log::error!("Mio register error {:?}", e);
-                            }
-                        }
+                    if let Some(SocketType::Tun(_, _)) = slot {
                         *slot = None;
                     }
                 }
@@ -378,44 +325,28 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
         for slot in self.sockets.iter_mut() {
             match slot {
                 #[cfg(feature = "udp")]
-                Some(SocketType::Udp(socket, _, owner2)) => {
+                Some(SocketType::Udp(_socket, _, owner2)) => {
                     if *owner2 == owner {
-                        if let Err(e) = self.poll.registry().deregister(socket) {
-                            log::error!("Mio deregister error {:?}", e);
-                        }
                         *slot = None;
                     }
                 }
                 #[cfg(feature = "tun-tap")]
-                Some(SocketType::Tun(fd, owner2)) => {
-                    use mio::unix::SourceFd;
-                    use std::os::unix::io::AsRawFd;
-
+                Some(SocketType::Tun(_fd, owner2)) => {
                     if *owner2 == owner {
-                        if let Err(e) = self
-                            .poll
-                            .registry()
-                            .deregister(&mut SourceFd(&fd.fd.as_raw_fd()))
-                        {
-                            log::error!("Mio deregister error {:?}", e);
-                        }
                         *slot = None;
                     }
                 }
-                Some(SocketType::Waker()) => {}
                 None => {}
             }
         }
     }
 }
 
-pub struct MioAwaker {
-    waker: Waker,
-}
+pub struct PollAwaker;
 
-impl Awaker for MioAwaker {
+impl Awaker for PollAwaker {
     fn awake(&self) {
-        self.waker.wake().expect("should wake mio waker");
+        //do nothing
     }
 }
 
@@ -429,13 +360,13 @@ mod tests {
         NetOutgoing, Owner,
     };
 
-    use super::MioBackend;
+    use super::PollBackend;
 
     #[allow(unused_assignments)]
     #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
-        let mut backend = MioBackend::<2, 2>::default();
+        let mut backend = PollBackend::<2, 2>::default();
 
         let mut addr1 = None;
         let mut slot1 = 0;
@@ -452,7 +383,8 @@ mod tests {
             },
         );
         backend.poll_incoming(Duration::from_secs(1));
-        match backend.pop_incoming(&mut buf) {
+        let res = backend.pop_incoming(&mut buf);
+        match res {
             Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
                 assert_eq!(owner, Owner::worker(1));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
@@ -460,7 +392,7 @@ mod tests {
                 addr1 = Some(res.0);
                 slot1 = res.1;
             }
-            _ => panic!("Expected UdpListenResult"),
+            _ => panic!("Expected UdpListenResult {:?}", res),
         }
 
         backend.on_action(
@@ -494,6 +426,11 @@ mod tests {
 
         backend.poll_incoming(Duration::from_secs(1));
         match backend.pop_incoming(&mut buf) {
+            Some((BackendIncoming::Awake, _owner)) => {}
+            _ => panic!("Expected Awake"),
+        }
+
+        match backend.pop_incoming(&mut buf) {
             Some((BackendIncoming::UdpPacket { from, slot, len }, owner)) => {
                 assert_eq!(owner, Owner::worker(2));
                 assert_eq!(from, addr1.expect(""));
@@ -504,9 +441,9 @@ mod tests {
         }
 
         backend.remove_owner(Owner::worker(1));
-        assert_eq!(backend.socket_count(), 2);
+        assert_eq!(backend.socket_count(), 1);
 
         backend.remove_owner(Owner::worker(2));
-        assert_eq!(backend.socket_count(), 1);
+        assert_eq!(backend.socket_count(), 0);
     }
 }

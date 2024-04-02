@@ -1,11 +1,14 @@
 use std::{
-    marker::PhantomData,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
 use sans_io_runtime::{
-    backend::MioBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskGroupOutput,
-    TaskGroupOutputsState, TaskInput, TaskOutput, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    backend::PollBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskInput, TaskOutput,
+    TaskSwitcher, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ICfg = ();
@@ -23,24 +26,16 @@ enum Type1ExtOut {}
 enum Type2ExtOut {}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-enum Type1Channel {
-    A,
-}
+enum Type1Channel {}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-enum Type2Channel {
-    B,
-}
+enum Type2Channel {}
 
 #[derive(Clone)]
-enum Type1Event {
-    A,
-}
+enum Type1Event {}
 
 #[derive(Clone)]
-enum Type2Event {
-    B,
-}
+enum Type2Event {}
 
 #[derive(Debug, Clone)]
 struct Type1Cfg {}
@@ -80,78 +75,117 @@ enum TestEvent {
 
 #[derive(Debug)]
 struct Task1 {
-    cfg: Type1Cfg,
+    _cfg: Type1Cfg,
 }
 
 impl Task1 {
-    fn new(cfg: Type1Cfg) -> Self {
-        Self { cfg }
+    fn new(_cfg: Type1Cfg) -> Self {
+        Self { _cfg }
     }
 }
 
-impl Task<Type1Channel, Type1Event> for Task1 {
+impl Task<Type1ExtIn, Type1ExtOut, Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
     const TYPE: u16 = 0;
 
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<TaskOutput<'a, Type1Channel, Type1Event>> {
+    fn on_tick<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
-    fn on_input<'b>(
+    fn on_event<'b>(
         &mut self,
         _now: Instant,
-        _input: TaskInput<'b, Type1Channel, Type1Event>,
-    ) -> Option<TaskOutput<'b, Type1Channel, Type1Event>> {
+        _input: TaskInput<'b, Type1ExtIn, Type1Channel, Type1Event>,
+    ) -> Option<TaskOutput<'b, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         None
     }
 
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1Channel, Type1Event>> {
+    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
         None
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
+        log::info!("task1 received shutdown");
+        Some(TaskOutput::Destroy)
     }
 }
 
 #[derive(Debug)]
 struct Task2 {
-    cfg: Type2Cfg,
+    _cfg: Type2Cfg,
 }
 
 impl Task2 {
-    fn new(cfg: Type2Cfg) -> Self {
-        Self { cfg }
+    fn new(_cfg: Type2Cfg) -> Self {
+        Self { _cfg }
     }
 }
 
-impl Task<Type2Channel, Type2Event> for Task2 {
+impl Task<Type2ExtIn, Type2ExtOut, Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
     const TYPE: u16 = 1;
 
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<TaskOutput<'a, Type2Channel, Type2Event>> {
+    fn on_tick<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
-    fn on_input<'b>(
+    fn on_event<'b>(
         &mut self,
         _now: Instant,
-        _input: TaskInput<'b, Type2Channel, Type2Event>,
-    ) -> Option<TaskOutput<'b, Type2Channel, Type2Event>> {
+        _input: TaskInput<'b, Type2ExtIn, Type2Channel, Type2Event>,
+    ) -> Option<TaskOutput<'b, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         None
     }
 
     fn pop_output<'a>(
         &mut self,
         _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2Channel, Type2Event>> {
+    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
         None
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        _now: Instant,
+    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
+        log::info!("task2 received shutdown");
+        Some(TaskOutput::Destroy)
     }
 }
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<Type1Channel, Type1Event, Task1, 16>,
-    echo_type2: TaskGroup<Type2Channel, Type2Event, Task2, 16>,
-    group_state: TaskGroupOutputsState<2>,
-    last_input_index: Option<u16>,
+    echo_type1: TaskGroup<
+        Type1ExtIn,
+        Type1ExtOut,
+        Type1Channel,
+        Type1Channel,
+        Type1Event,
+        Type1Event,
+        Task1,
+        16,
+    >,
+    echo_type2: TaskGroup<
+        Type2ExtIn,
+        Type2ExtOut,
+        Type2Channel,
+        Type2Channel,
+        Type2Event,
+        Type2Event,
+        Task2,
+        16,
+    >,
+    switcher: TaskSwitcher,
 }
 
 impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
@@ -170,8 +204,7 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
             worker,
             echo_type1: TaskGroup::new(worker),
             echo_type2: TaskGroup::new(worker),
-            last_input_index: None,
-            group_state: TaskGroupOutputsState::default(),
+            switcher: TaskSwitcher::new(2),
         }
     }
 
@@ -186,34 +219,29 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         }
     }
 
-    fn on_input_tick<'a>(
+    fn on_tick<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+        let switcher = &mut self.switcher;
         loop {
-            match self.group_state.current()? {
-                0 => match self.echo_type1.on_input_tick(now) {
-                    Some(e) => {
+            match switcher.looper_current(now)? {
+                0 => {
+                    if let Some(e) = switcher.looper_process(self.echo_type1.on_tick(now)) {
                         return Some(e.into());
                     }
-                    None => {
-                        self.group_state.finish_current();
-                    }
-                },
-                1 => match self.echo_type2.on_input_tick(now) {
-                    Some(e) => {
+                }
+                1 => {
+                    if let Some(e) = switcher.looper_process(self.echo_type2.on_tick(now)) {
                         return Some(e.into());
                     }
-                    None => {
-                        self.group_state.finish_current();
-                    }
-                },
+                }
                 _ => unreachable!(),
             }
         }
     }
 
-    fn on_input_event<'a>(
+    fn on_event<'a>(
         &mut self,
         now: Instant,
         event: WorkerInnerInput<'a, TestExtIn, TestChannel, TestEvent>,
@@ -221,18 +249,18 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         match event {
             WorkerInnerInput::Task(owner, event) => match owner.group_id() {
                 Some(0) => {
-                    let TaskGroupOutput(owner, output) = self
+                    let res = self
                         .echo_type1
-                        .on_input_event(now, TaskGroupInput(owner, event.convert_into()?))?;
-                    self.last_input_index = Some(1);
-                    Some(WorkerInnerOutput::Task(owner, output.convert_into()))
+                        .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
+                    self.switcher.queue_flag_task(0);
+                    Some(res.into())
                 }
                 Some(1) => {
-                    let TaskGroupOutput(owner, output) = self
+                    let res = self
                         .echo_type2
-                        .on_input_event(now, TaskGroupInput(owner, event.convert_into()?))?;
-                    self.last_input_index = Some(2);
-                    Some(WorkerInnerOutput::Task(owner, output.convert_into()))
+                        .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
+                    self.switcher.queue_flag_task(1);
+                    Some(res.into())
                 }
                 _ => unreachable!(),
             },
@@ -240,14 +268,46 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
         }
     }
 
-    fn pop_last_input<'a>(
+    fn pop_output<'a>(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
-        match self.last_input_index? {
-            0 => self.echo_type1.pop_last_input(now).map(|a| a.into()),
-            1 => self.echo_type2.pop_last_input(now).map(|a| a.into()),
-            _ => unreachable!(),
+        let switcher = &mut self.switcher;
+        loop {
+            match switcher.queue_current()? {
+                0 => {
+                    if let Some(e) = switcher.queue_process(self.echo_type1.pop_output(now)) {
+                        return Some(e.into());
+                    }
+                }
+                1 => {
+                    if let Some(e) = switcher.queue_process(self.echo_type2.pop_output(now)) {
+                        return Some(e.into());
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn shutdown<'a>(
+        &mut self,
+        now: Instant,
+    ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+        loop {
+            match self.switcher.looper_current(now)? {
+                0 => {
+                    if let Some(e) = self.switcher.looper_process(self.echo_type1.shutdown(now)) {
+                        return Some(e.into());
+                    }
+                }
+                1 => {
+                    if let Some(e) = self.switcher.looper_process(self.echo_type2.shutdown(now)) {
+                        return Some(e.into());
+                    }
+                }
+                _ => unreachable!(),
+            }
         }
     }
 }
@@ -257,15 +317,37 @@ fn main() {
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
         Controller::<TestExtIn, TestExtOut, TestSCfg, TestChannel, TestEvent, 1024>::default();
-    controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
-    controller.add_worker::<_, EchoWorkerInner, MioBackend<1024, 1024>>((), None);
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+        Duration::from_secs(1),
+        (),
+        None,
+    );
+    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+        Duration::from_secs(1),
+        (),
+        None,
+    );
 
-    for _i in 0..100 {
+    for _i in 0..10 {
         controller.spawn(TestSCfg::Type1(Type1Cfg {}));
         controller.spawn(TestSCfg::Type2(Type2Cfg {}));
     }
-    loop {
-        controller.process();
-        std::thread::sleep(Duration::from_millis(100));
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("Should register hook");
+    let mut shutdown_wait = 0;
+
+    while controller.process().is_some() {
+        if term.load(Ordering::Relaxed) {
+            if shutdown_wait == 300 {
+                log::warn!("Force shutdown");
+                break;
+            }
+            shutdown_wait += 1;
+            controller.shutdown();
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
+
+    log::info!("Server shutdown");
 }
