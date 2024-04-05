@@ -5,7 +5,6 @@ use crate::{
     bus::{BusEventSource, BusSendSingleFeature, BusSystemBuilder, BusWorker},
     collections::DynamicDeque,
     worker::{self, WorkerControlIn, WorkerControlOut, WorkerInner, WorkerStats},
-    Owner,
 };
 
 const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;
@@ -68,9 +67,10 @@ impl<
     > Controller<ExtIn, ExtOut, SCfg, ChannelId, Event, INNER_BUS_STACK>
 {
     pub fn add_worker<
+        Owner: Debug + Clone + Copy + PartialEq,
         ICfg: 'static + Send + Sync,
-        Inner: WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
-        B: Backend,
+        Inner: WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
+        B: Backend<Owner>,
     >(
         &mut self,
         tick: Duration,
@@ -88,13 +88,14 @@ impl<
         let join = std::thread::Builder::new()
             .stack_size(stack_size)
             .spawn(move || {
-                let mut worker = worker::Worker::<_, _, _, _, _, _, _, B, INNER_BUS_STACK>::new(
-                    tick,
-                    Inner::build(worker_in.leg_index() as u16, cfg),
-                    worker_inner,
-                    worker_out,
-                    worker_in,
-                );
+                let mut worker =
+                    worker::Worker::<Owner, _, _, _, _, _, _, _, B, INNER_BUS_STACK>::new(
+                        tick,
+                        Inner::build(worker_in.leg_index() as u16, cfg),
+                        worker_inner,
+                        worker_out,
+                        worker_in,
+                    );
                 log::info!("Worker {worker_index} started");
                 tx.send(()).expect("Should send start signal");
                 loop {
@@ -187,12 +188,11 @@ impl<
         }
     }
 
-    pub fn send_to(&mut self, owner: Owner, ext: ExtIn) {
-        if let Err(e) = self.worker_control_bus.send(
-            owner.worker_id() as usize,
-            true,
-            WorkerControlIn::Ext(ext),
-        ) {
+    pub fn send_to(&mut self, worker: u16, ext: ExtIn) {
+        if let Err(e) =
+            self.worker_control_bus
+                .send(worker as usize, true, WorkerControlIn::Ext(ext))
+        {
             log::error!("Failed to send to task: {:?}", e);
         }
     }

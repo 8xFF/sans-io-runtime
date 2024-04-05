@@ -8,9 +8,9 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::PollBackend, Buffer, Controller, ErrorDebugger2, NetIncoming, NetOutgoing, Task,
-    TaskGroup, TaskGroupInput, TaskInput, TaskOutput, WorkerInner, WorkerInnerInput,
-    WorkerInnerOutput,
+    backend::PollBackend, group_owner_type, Buffer, Controller, ErrorDebugger2, NetIncoming,
+    NetOutgoing, Task, TaskGroup, TaskGroupInput, TaskGroupOwner, TaskInput, TaskOutput,
+    WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -129,12 +129,14 @@ impl Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event> for EchoTask {
     }
 }
 
+group_owner_type!(OwnerType);
+
 struct EchoWorkerInner {
     worker: u16,
-    tasks: TaskGroup<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask, 16>,
+    tasks: TaskGroup<OwnerType, ExtIn, ExtOut, ChannelId, ChannelId, Event, Event, EchoTask, 16>,
 }
 
-impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
+impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
     fn tasks(&self) -> usize {
         self.tasks.tasks()
     }
@@ -146,7 +148,7 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn build(worker: u16, _cfg: ICfg) -> Self {
         Self {
             worker,
-            tasks: TaskGroup::new(worker),
+            tasks: TaskGroup::new(),
         }
     }
 
@@ -157,15 +159,15 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         self.tasks.on_tick(now).map(|a| a.into())
     }
 
     fn on_event<'a>(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+        event: WorkerInnerInput<'a, OwnerType, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Task(owner, event) => self
                 .tasks
@@ -178,14 +180,14 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInne
     fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         self.tasks.pop_output(now).map(|a| a.into())
     }
 
     fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         self.tasks.shutdown(now).map(|a| a.into())
     }
 }
@@ -195,12 +197,12 @@ fn main() {
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
         Controller::<ExtIn, ExtOut, EchoTaskCfg, ChannelId, Event, 1024>::default();
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+    controller.add_worker::<OwnerType, _, EchoWorkerInner, PollBackend<_, 1024, 1024>>(
         Duration::from_secs(1),
         (),
         None,
     );
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+    controller.add_worker::<OwnerType, _, EchoWorkerInner, PollBackend<_, 1024, 1024>>(
         Duration::from_secs(1),
         (),
         None,

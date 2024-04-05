@@ -1,41 +1,49 @@
 use std::{hash::Hash, marker::PhantomData, time::Instant};
 
 use crate::{
-    collections::DynamicVec, Owner, Task, TaskInput, TaskOutput, TaskSwitcher, WorkerInnerOutput,
+    collections::DynamicVec, Task, TaskInput, TaskOutput, TaskSwitcher, WorkerInnerOutput,
 };
 
+pub trait TaskGroupOwner {
+    fn build(index: usize) -> Self;
+    fn task_index(&self) -> usize;
+}
+
 /// Represents the input of a task group.
-pub struct TaskGroupInput<'a, ExtIn, ChannelId, Event>(
+pub struct TaskGroupInput<'a, Owner: TaskGroupOwner, ExtIn, ChannelId, Event>(
     pub Owner,
     pub TaskInput<'a, ExtIn, ChannelId, Event>,
 );
 
 /// Represents the output of a task group.
-pub struct TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>(
+pub struct TaskGroupOutput<'a, Owner: TaskGroupOwner, ExtOut, ChannelIn, ChannelOut, Event>(
     pub Owner,
     pub TaskOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>,
 );
 
 impl<
         'a,
+        Owner: TaskGroupOwner,
         ExtOut,
         ChannelIn,
         ChannelOut,
         Event,
+        IOwner: From<Owner>,
         IExtOut: From<ExtOut>,
         IChannel: From<ChannelIn> + From<ChannelOut>,
         IEvent: From<Event>,
         ISCfg,
-    > From<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>>
-    for WorkerInnerOutput<'a, IExtOut, IChannel, IEvent, ISCfg>
+    > From<TaskGroupOutput<'a, Owner, ExtOut, ChannelIn, ChannelOut, Event>>
+    for WorkerInnerOutput<'a, IOwner, IExtOut, IChannel, IEvent, ISCfg>
 {
-    fn from(value: TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, Event>) -> Self {
-        WorkerInnerOutput::Task(value.0, value.1.convert_into())
+    fn from(value: TaskGroupOutput<'a, Owner, ExtOut, ChannelIn, ChannelOut, Event>) -> Self {
+        WorkerInnerOutput::Task(value.0.into(), value.1.convert_into())
     }
 }
 
 /// Represents a group of tasks.
 pub struct TaskGroup<
+    Owner: TaskGroupOwner,
     ExtIn,
     ExtOut,
     ChannelIn: Hash + Eq + PartialEq,
@@ -45,14 +53,22 @@ pub struct TaskGroup<
     T: Task<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut>,
     const STACK_SIZE: usize,
 > {
-    worker: u16,
     tasks: DynamicVec<Option<T>, STACK_SIZE>,
-    _tmp: PhantomData<(ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut)>,
+    _tmp: PhantomData<(
+        Owner,
+        ExtIn,
+        ExtOut,
+        ChannelIn,
+        ChannelOut,
+        EventIn,
+        EventOut,
+    )>,
     switcher: TaskSwitcher,
     destroy_list: DynamicVec<usize, STACK_SIZE>,
 }
 
 impl<
+        Owner: TaskGroupOwner,
         ExtIn,
         ExtOut,
         ChannelIn: Hash + Eq + PartialEq,
@@ -61,12 +77,11 @@ impl<
         EventOut,
         T: Task<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut>,
         const STACK_SIZE: usize,
-    > TaskGroup<ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut, T, STACK_SIZE>
+    > TaskGroup<Owner, ExtIn, ExtOut, ChannelIn, ChannelOut, EventIn, EventOut, T, STACK_SIZE>
 {
     /// Creates a new task group with the specified worker ID.
-    pub fn new(worker: u16) -> Self {
+    pub fn new() -> Self {
         Self {
-            worker,
             tasks: DynamicVec::default(),
             _tmp: Default::default(),
             switcher: TaskSwitcher::new(0),
@@ -101,7 +116,7 @@ impl<
     pub fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
+    ) -> Option<TaskGroupOutput<'a, Owner, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         self.clear_destroyed_task();
 
         while let Some(index) = self.switcher.looper_current(now) {
@@ -116,7 +131,7 @@ impl<
                 if let TaskOutput::Destroy = out {
                     self.destroy_list.push_safe(index);
                 }
-                let owner = Owner::task(self.worker, T::TYPE, index);
+                let owner = Owner::build(index);
                 return Some(TaskGroupOutput(owner, out));
             }
         }
@@ -129,10 +144,10 @@ impl<
     pub fn on_event<'a>(
         &mut self,
         now: Instant,
-        input: TaskGroupInput<'a, ExtIn, ChannelIn, EventIn>,
-    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
+        input: TaskGroupInput<'a, Owner, ExtIn, ChannelIn, EventIn>,
+    ) -> Option<TaskGroupOutput<'a, Owner, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         let TaskGroupInput(owner, input) = input;
-        let index = owner.task_index().expect("should have task index");
+        let index = owner.task_index();
         let task = self
             .tasks
             .get_mut_or_panic(index)
@@ -153,12 +168,12 @@ impl<
     pub fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
+    ) -> Option<TaskGroupOutput<'a, Owner, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         // We dont clear_destroyed_task here because have some case we have output after we received TaskOutput::Destroy the task.
         // We will clear_destroyed_task in next pop_output call.
 
         while let Some(index) = self.switcher.queue_current() {
-            let owner = Owner::task(self.worker, T::TYPE, index);
+            let owner = Owner::build(index);
             let slot = self
                 .tasks
                 .get_mut_or_panic(index)
@@ -178,7 +193,7 @@ impl<
     pub fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<TaskGroupOutput<'a, ExtOut, ChannelIn, ChannelOut, EventOut>> {
+    ) -> Option<TaskGroupOutput<'a, Owner, ExtOut, ChannelIn, ChannelOut, EventOut>> {
         while let Some(index) = self.switcher.looper_current(now) {
             log::info!("Group kill tasks {}/{}", index, self.switcher.tasks());
             //We only call each task single time
@@ -193,7 +208,7 @@ impl<
                 if let TaskOutput::Destroy = out {
                     self.destroy_list.push_safe(index);
                 }
-                let owner = Owner::task(self.worker, T::TYPE, index);
+                let owner = Owner::build(index);
                 return Some(TaskGroupOutput(owner, out));
             }
         }

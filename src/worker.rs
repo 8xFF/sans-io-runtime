@@ -9,7 +9,6 @@ use crate::{
     bus::{
         BusEvent, BusEventSource, BusLocalHub, BusPubSubFeature, BusSendSingleFeature, BusWorker,
     },
-    owner::Owner,
     NetIncoming, TaskInput, TaskOutput,
 };
 
@@ -44,19 +43,19 @@ impl WorkerStats {
     }
 }
 
-pub enum WorkerInnerInput<'a, ExtIn, ChannelId, Event> {
+pub enum WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event> {
     Task(Owner, TaskInput<'a, ExtIn, ChannelId, Event>),
     Ext(ExtIn),
 }
 
-pub enum WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg> {
+pub enum WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg> {
     Task(Owner, TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>),
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
     Spawn(SCfg),
 }
 
-pub trait WorkerInner<ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
+pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
     fn build(worker: u16, cfg: ICfg) -> Self;
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
@@ -64,37 +63,38 @@ pub trait WorkerInner<ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
     fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
     fn on_event<'a>(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, ExtIn, ChannelIn, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
+        event: WorkerInnerInput<'a, Owner, ExtIn, ChannelIn, Event>,
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
     fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
     fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelIn, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
 }
 
 pub(crate) struct Worker<
+    Owner,
     ExtIn: Clone,
     ExtOut: Clone,
     ChannelId: Hash + PartialEq + Eq,
     Event,
-    Inner: WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
+    Inner: WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
     ICfg,
     SCfg,
-    B: Backend,
+    B: Backend<Owner>,
     const INNER_BUS_STACK: usize,
 > {
     tick: Duration,
     last_tick: Instant,
     inner: Inner,
-    bus_local_hub: BusLocalHub<ChannelId>,
+    bus_local_hub: BusLocalHub<Owner, ChannelId>,
     inner_bus: BusWorker<ChannelId, Event, INNER_BUS_STACK>,
     backend: B,
     worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
@@ -104,16 +104,17 @@ pub(crate) struct Worker<
 }
 
 impl<
+        Owner: Debug + Clone + Copy + PartialEq,
         ExtIn: Clone,
         ExtOut: Clone,
         ChannelId: Hash + PartialEq + Eq + Debug + Copy,
         Event: Clone,
-        Inner: WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
-        B: Backend,
+        Inner: WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg>,
+        B: Backend<Owner>,
         ICfg,
         SCfg,
         const INNER_BUS_STACK: usize,
-    > Worker<ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B, INNER_BUS_STACK>
+    > Worker<Owner, ExtIn, ExtOut, ChannelId, Event, Inner, ICfg, SCfg, B, INNER_BUS_STACK>
 {
     pub fn new(
         tick: Duration,
@@ -197,20 +198,21 @@ impl<
 
         self.backend.poll_incoming(remain_time);
 
-        while let Some((event, owner)) = self.backend.pop_incoming(&mut self.network_buffer) {
-            if let BackendIncoming::Awake = event {
-                self.on_awake(now);
-            } else {
-                let event = NetIncoming::from_backend(event, &mut self.network_buffer);
-                Self::on_input_event(
-                    now,
-                    WorkerInnerInput::Task(owner, TaskInput::Net(event)),
-                    &mut self.inner,
-                    &mut self.inner_bus,
-                    &mut self.worker_out,
-                    &mut self.backend,
-                    &mut self.bus_local_hub,
-                );
+        while let Some(event) = self.backend.pop_incoming(&mut self.network_buffer) {
+            match event {
+                BackendIncoming::Awake => self.on_awake(now),
+                BackendIncoming::Event(owner, event) => {
+                    let event = NetIncoming::from_backend(event, &mut self.network_buffer);
+                    Self::on_input_event(
+                        now,
+                        WorkerInnerInput::Task(owner, TaskInput::Net(event)),
+                        &mut self.inner,
+                        &mut self.inner_bus,
+                        &mut self.worker_out,
+                        &mut self.backend,
+                        &mut self.bus_local_hub,
+                    );
+                }
             }
         }
 
@@ -228,7 +230,7 @@ impl<
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<ChannelId>,
+        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
     ) {
         let worker = inner.worker_index();
         while let Some(out) = inner.on_tick(now) {
@@ -252,7 +254,7 @@ impl<
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<ChannelId>,
+        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
     ) {
         let worker = inner.worker_index();
         while let Some(out) = inner.shutdown(now) {
@@ -302,12 +304,12 @@ impl<
 
     fn on_input_event(
         now: Instant,
-        input: WorkerInnerInput<ExtIn, ChannelId, Event>,
+        input: WorkerInnerInput<Owner, ExtIn, ChannelId, Event>,
         inner: &mut Inner,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<ChannelId>,
+        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
     ) {
         let worker = inner.worker_index();
         if let Some(out) = inner.on_event(now, input) {
@@ -326,12 +328,12 @@ impl<
     }
 
     fn process_inner_output(
-        out: WorkerInnerOutput<ExtOut, ChannelId, Event, SCfg>,
+        out: WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>,
         worker: u16,
         inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
         worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
         backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<ChannelId>,
+        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
     ) {
         match out {
             WorkerInnerOutput::Spawn(cfg) => {

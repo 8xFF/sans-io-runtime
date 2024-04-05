@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 
 use std::{ops::Deref, time::Instant};
 
-use crate::{backend::BackendIncoming, bus::BusEvent};
+use crate::{backend::BackendIncomingEvent, bus::BusEvent};
 
 pub mod group;
 pub mod switcher;
@@ -40,26 +40,23 @@ pub enum NetIncoming<'a> {
 }
 
 impl<'a> NetIncoming<'a> {
-    pub fn from_backend(event: BackendIncoming, buf: &'a mut [u8]) -> Self {
+    pub fn from_backend(event: BackendIncomingEvent, buf: &'a mut [u8]) -> Self {
         match event {
             #[cfg(feature = "udp")]
-            BackendIncoming::UdpListenResult { bind, result } => {
+            BackendIncomingEvent::UdpListenResult { bind, result } => {
                 Self::UdpListenResult { bind, result }
             }
             #[cfg(feature = "udp")]
-            BackendIncoming::UdpPacket { from, slot, len } => {
+            BackendIncomingEvent::UdpPacket { from, slot, len } => {
                 let data = &mut buf[..len];
                 Self::UdpPacket { from, slot, data }
             }
             #[cfg(feature = "tun-tap")]
-            BackendIncoming::TunBindResult { result } => Self::TunBindResult { result },
+            BackendIncomingEvent::TunBindResult { result } => Self::TunBindResult { result },
             #[cfg(feature = "tun-tap")]
-            BackendIncoming::TunPacket { slot, len } => {
+            BackendIncomingEvent::TunPacket { slot, len } => {
                 let data = &mut buf[..len];
                 Self::TunPacket { slot, data }
-            }
-            BackendIncoming::Awake => {
-                panic!("Unexpected awake event");
             }
         }
     }

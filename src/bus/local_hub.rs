@@ -1,13 +1,11 @@
 use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
-use crate::Owner;
-
 #[derive(Debug)]
-pub struct BusLocalHub<ChannelId: Hash + PartialEq + Eq> {
+pub struct BusLocalHub<Owner, ChannelId: Hash + PartialEq + Eq> {
     channels: HashMap<ChannelId, Vec<Owner>>,
 }
 
-impl<ChannelId: Hash + PartialEq + Eq> Default for BusLocalHub<ChannelId> {
+impl<Owner, ChannelId: Hash + PartialEq + Eq> Default for BusLocalHub<Owner, ChannelId> {
     fn default() -> Self {
         Self {
             channels: HashMap::new(),
@@ -15,7 +13,9 @@ impl<ChannelId: Hash + PartialEq + Eq> Default for BusLocalHub<ChannelId> {
     }
 }
 
-impl<ChannelId: Debug + Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<ChannelId> {
+impl<Owner: Clone + Debug + PartialEq, ChannelId: Debug + Clone + Copy + Hash + PartialEq + Eq>
+    BusLocalHub<Owner, ChannelId>
+{
     /// subscribe to a channel. if it is first time subscription, return true; else return false
     pub fn subscribe(&mut self, owner: Owner, channel: ChannelId) -> bool {
         let entry = self.channels.entry(channel).or_default();
@@ -73,7 +73,11 @@ impl<ChannelId: Debug + Clone + Copy + Hash + PartialEq + Eq> BusLocalHub<Channe
 
 #[cfg(test)]
 mod tests {
+    use crate::{group_owner_type, TaskGroupOwner};
+
     use super::*;
+
+    group_owner_type!(DemoOwner);
 
     #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
     enum Channel {
@@ -84,9 +88,9 @@ mod tests {
 
     #[test]
     fn test_subscribe_unsubscribe() {
-        let mut hub: BusLocalHub<Channel> = BusLocalHub::default();
-        let owner1 = Owner::worker(1);
-        let owner2 = Owner::worker(2);
+        let mut hub: BusLocalHub<DemoOwner, Channel> = BusLocalHub::default();
+        let owner1 = DemoOwner(1);
+        let owner2 = DemoOwner(2);
 
         assert_eq!(hub.subscribe(owner1, Channel::A), true);
         assert_eq!(hub.subscribe(owner2, Channel::A), false);
@@ -101,9 +105,9 @@ mod tests {
 
     #[test]
     fn test_get_subscribers() {
-        let mut hub: BusLocalHub<Channel> = BusLocalHub::default();
-        let owner1 = Owner::worker(1);
-        let owner2 = Owner::worker(2);
+        let mut hub: BusLocalHub<DemoOwner, Channel> = BusLocalHub::default();
+        let owner1 = DemoOwner(1);
+        let owner2 = DemoOwner(2);
 
         hub.subscribe(owner1, Channel::A);
         hub.subscribe(owner1, Channel::B);
@@ -116,9 +120,9 @@ mod tests {
 
     #[test]
     fn test_remove_owner() {
-        let mut hub: BusLocalHub<Channel> = BusLocalHub::default();
-        let owner1 = Owner::worker(1);
-        let owner2 = Owner::worker(2);
+        let mut hub: BusLocalHub<DemoOwner, Channel> = BusLocalHub::default();
+        let owner1 = DemoOwner(1);
+        let owner2 = DemoOwner(2);
 
         hub.subscribe(owner1, Channel::A);
         hub.subscribe(owner1, Channel::B);

@@ -7,8 +7,9 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::PollBackend, Controller, Task, TaskGroup, TaskGroupInput, TaskInput, TaskOutput,
-    TaskSwitcher, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    backend::PollBackend, group_owner_type, Controller, Task, TaskGroup, TaskGroupInput,
+    TaskGroupOwner, TaskInput, TaskOutput, TaskSwitcher, WorkerInner, WorkerInnerInput,
+    WorkerInnerOutput,
 };
 
 type ICfg = ();
@@ -163,9 +164,19 @@ impl Task<Type2ExtIn, Type2ExtOut, Type2Channel, Type2Channel, Type2Event, Type2
     }
 }
 
+group_owner_type!(Type1Owner);
+group_owner_type!(Type2Owner);
+
+#[derive(convert_enum::From, Debug, Clone, Copy, PartialEq)]
+enum OwnerType {
+    Type1(Type1Owner),
+    Type2(Type2Owner),
+}
+
 struct EchoWorkerInner {
     worker: u16,
     echo_type1: TaskGroup<
+        Type1Owner,
         Type1ExtIn,
         Type1ExtOut,
         Type1Channel,
@@ -176,6 +187,7 @@ struct EchoWorkerInner {
         16,
     >,
     echo_type2: TaskGroup<
+        Type2Owner,
         Type2ExtIn,
         Type2ExtOut,
         Type2Channel,
@@ -188,7 +200,7 @@ struct EchoWorkerInner {
     switcher: TaskSwitcher,
 }
 
-impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
+impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
     for EchoWorkerInner
 {
     fn tasks(&self) -> usize {
@@ -202,8 +214,8 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
     fn build(worker: u16, _cfg: ICfg) -> Self {
         Self {
             worker,
-            echo_type1: TaskGroup::new(worker),
-            echo_type2: TaskGroup::new(worker),
+            echo_type1: TaskGroup::new(),
+            echo_type2: TaskGroup::new(),
             switcher: TaskSwitcher::new(2),
         }
     }
@@ -222,7 +234,8 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
     fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
+    {
         let switcher = &mut self.switcher;
         loop {
             match switcher.looper_current(now)? {
@@ -244,25 +257,25 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
     fn on_event<'a>(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, TestExtIn, TestChannel, TestEvent>,
-    ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+        event: WorkerInnerInput<'a, OwnerType, TestExtIn, TestChannel, TestEvent>,
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
+    {
         match event {
-            WorkerInnerInput::Task(owner, event) => match owner.group_id() {
-                Some(0) => {
+            WorkerInnerInput::Task(owner, event) => match owner {
+                OwnerType::Type1(o) => {
                     let res = self
                         .echo_type1
-                        .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
+                        .on_event(now, TaskGroupInput(o, event.convert_into()?))?;
                     self.switcher.queue_flag_task(0);
                     Some(res.into())
                 }
-                Some(1) => {
+                OwnerType::Type2(o) => {
                     let res = self
                         .echo_type2
-                        .on_event(now, TaskGroupInput(owner, event.convert_into()?))?;
+                        .on_event(now, TaskGroupInput(o, event.convert_into()?))?;
                     self.switcher.queue_flag_task(1);
                     Some(res.into())
                 }
-                _ => unreachable!(),
             },
             _ => unreachable!(),
         }
@@ -271,7 +284,8 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
     fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
+    {
         let switcher = &mut self.switcher;
         loop {
             match switcher.queue_current()? {
@@ -293,7 +307,8 @@ impl WorkerInner<TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg, TestSCfg>
     fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
+    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
+    {
         loop {
             match self.switcher.looper_current(now)? {
                 0 => {
@@ -317,12 +332,12 @@ fn main() {
     println!("{}", std::mem::size_of::<EchoWorkerInner>());
     let mut controller =
         Controller::<TestExtIn, TestExtOut, TestSCfg, TestChannel, TestEvent, 1024>::default();
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+    controller.add_worker::<OwnerType, _, EchoWorkerInner, PollBackend<_, 1024, 1024>>(
         Duration::from_secs(1),
         (),
         None,
     );
-    controller.add_worker::<_, EchoWorkerInner, PollBackend<1024, 1024>>(
+    controller.add_worker::<OwnerType, _, EchoWorkerInner, PollBackend<_, 1024, 1024>>(
         Duration::from_secs(1),
         (),
         None,

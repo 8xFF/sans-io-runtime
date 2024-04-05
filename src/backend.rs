@@ -2,7 +2,7 @@
 use std::net::SocketAddr;
 use std::{fmt::Debug, sync::Arc, time::Duration};
 
-use crate::{owner::Owner, task::NetOutgoing};
+use crate::task::NetOutgoing;
 
 #[cfg(feature = "mio-backend")]
 mod mio;
@@ -22,9 +22,8 @@ pub use poll::PollBackend;
 #[cfg(feature = "polling-backend")]
 pub use polling::PollingBackend;
 
-/// Represents an incoming network event.
 #[derive(Debug)]
-pub enum BackendIncoming {
+pub enum BackendIncomingEvent {
     #[cfg(feature = "udp")]
     UdpListenResult {
         bind: SocketAddr,
@@ -41,10 +40,13 @@ pub enum BackendIncoming {
         result: Result<usize, std::io::Error>,
     },
     #[cfg(feature = "tun-tap")]
-    TunPacket {
-        slot: usize,
-        len: usize,
-    },
+    TunPacket { slot: usize, len: usize },
+}
+
+/// Represents an incoming network event.
+#[derive(Debug)]
+pub enum BackendIncoming<Owner> {
+    Event(Owner, BackendIncomingEvent),
     Awake,
 }
 
@@ -52,15 +54,15 @@ pub trait Awaker: Send + Sync {
     fn awake(&self);
 }
 
-pub trait Backend: Default + BackendOwner {
+pub trait Backend<Owner>: Default + BackendOwner<Owner> {
     fn create_awaker(&self) -> Arc<dyn Awaker>;
     fn poll_incoming(&mut self, timeout: Duration);
-    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)>;
+    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<BackendIncoming<Owner>>;
     fn finish_outgoing_cycle(&mut self);
     fn finish_incoming_cycle(&mut self);
 }
 
-pub trait BackendOwner {
+pub trait BackendOwner<Owner> {
     fn on_action(&mut self, owner: Owner, action: NetOutgoing);
     fn remove_owner(&mut self, owner: Owner);
 }

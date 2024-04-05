@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     net::{SocketAddr, UdpSocket},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,17 +17,16 @@ use std::io::{Read, Write};
 use crate::{
     backend::BackendOwner,
     collections::{DynamicDeque, DynamicVec},
-    owner::Owner,
     NetOutgoing,
 };
 
-use super::{Awaker, Backend, BackendIncoming};
+use super::{Awaker, Backend, BackendIncoming, BackendIncomingEvent};
 
 const QUEUE_PKT_NUM: usize = 512;
 
 type Token = usize;
 
-enum SocketType {
+enum SocketType<Owner> {
     Waker(),
     #[cfg(feature = "udp")]
     #[allow(dead_code)]
@@ -35,19 +35,22 @@ enum SocketType {
     Tun(super::tun::TunFd, Owner),
 }
 
-pub struct PollingBackend<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
+pub struct PollingBackend<Owner, const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
     poll: Arc<Poller>,
     event_buffer: Events,
     event_buffer2: heapless::Deque<Token, QUEUE_PKT_NUM>,
-    sockets: DynamicVec<Option<SocketType>, SOCKET_STACK_SIZE>,
-    output: DynamicDeque<(BackendIncoming, Owner), QUEUE_STACK_SIZE>,
+    sockets: DynamicVec<Option<SocketType<Owner>>, SOCKET_STACK_SIZE>,
+    output: DynamicDeque<BackendIncoming<Owner>, QUEUE_STACK_SIZE>,
     cycle_count: u64,
     awaker: Arc<PollingAwaker>,
     awake_flag: Arc<AtomicBool>,
 }
 
-impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
-    PollingBackend<SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
+impl<
+        Owner: Debug + Clone + Copy + PartialEq,
+        const SOCKET_STACK_SIZE: usize,
+        const QUEUE_STACK_SIZE: usize,
+    > PollingBackend<Owner, SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
 {
     #[cfg(feature = "udp")]
     fn create_udp(addr: SocketAddr, reuse: bool) -> Result<UdpSocket, std::io::Error> {
@@ -90,7 +93,7 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
         self.sockets.push_safe(None);
         self.sockets.len() - 1
     }
-    fn pop_cached_event(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
+    fn pop_cached_event(&mut self, buf: &mut [u8]) -> Option<BackendIncoming<Owner>> {
         if let Some(wait) = self.output.pop_front() {
             return Some(wait);
         }
@@ -102,13 +105,13 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
                     Some(Some(SocketType::Udp(socket, _, owner))) => {
                         self.event_buffer2.pop_front();
                         if let Ok((buffer_size, addr)) = socket.recv_from(buf) {
-                            return Some((
-                                BackendIncoming::UdpPacket {
+                            return Some(BackendIncoming::Event(
+                                *owner,
+                                BackendIncomingEvent::UdpPacket {
                                     from: addr,
                                     slot: slot_index,
                                     len: buffer_size,
                                 },
-                                *owner,
                             ));
                         } else {
                             self.event_buffer2.pop_front();
@@ -116,19 +119,18 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
                     }
                     Some(Some(SocketType::Waker())) => {
                         self.event_buffer2.pop_front();
-                        return Some((BackendIncoming::Awake, Owner::worker(0)));
-                        //TODO dont use 0
+                        return Some(BackendIncoming::Awake);
                     }
                     #[cfg(feature = "tun-tap")]
                     Some(Some(SocketType::Tun(fd, owner))) => {
                         if fd.read {
                             if let Ok(size) = fd.fd.read(buf) {
-                                return Some((
-                                    BackendIncoming::TunPacket {
+                                return Some(BackendIncoming::Event(
+                                    *owner,
+                                    BackendIncomingEvent::TunPacket {
                                         slot: slot_index,
                                         len: size,
                                     },
-                                    *owner,
                                 ));
                             }
                         }
@@ -145,8 +147,8 @@ impl<const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize>
     }
 }
 
-impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
-    for PollingBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
+impl<Owner, const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
+    for PollingBackend<Owner, SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
     fn default() -> Self {
         let poll = Arc::new(Poller::new().expect("should create mio-poll"));
@@ -164,8 +166,11 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
     }
 }
 
-impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
-    for PollingBackend<SOCKET_LIMIT, STACK_QUEUE_SIZE>
+impl<
+        Owner: Debug + Clone + Copy + PartialEq,
+        const SOCKET_LIMIT: usize,
+        const STACK_QUEUE_SIZE: usize,
+    > Backend<Owner> for PollingBackend<Owner, SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
     fn create_awaker(&self) -> Arc<dyn Awaker> {
         self.awaker.clone()
@@ -190,7 +195,7 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
         }
     }
 
-    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<(BackendIncoming, Owner)> {
+    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<BackendIncoming<Owner>> {
         self.pop_cached_event(buf)
     }
 
@@ -199,8 +204,11 @@ impl<const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Backend
     fn finish_incoming_cycle(&mut self) {}
 }
 
-impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
-    for PollingBackend<SOCKET_LIMIT, QUEUE_SIZE>
+impl<
+        Owner: Debug + Clone + Copy + PartialEq,
+        const SOCKET_LIMIT: usize,
+        const QUEUE_SIZE: usize,
+    > BackendOwner<Owner> for PollingBackend<Owner, SOCKET_LIMIT, QUEUE_SIZE>
 {
     fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
         match action {
@@ -222,24 +230,24 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                             }
                         }
 
-                        self.output.push_back_safe((
-                            BackendIncoming::UdpListenResult {
+                        self.output.push_back_safe(BackendIncoming::Event(
+                            owner,
+                            BackendIncomingEvent::UdpListenResult {
                                 bind: addr,
                                 result: Ok((local_addr, slot)),
                             },
-                            owner,
                         ));
                         *self.sockets.get_mut_or_panic(slot) =
                             Some(SocketType::Udp(socket, local_addr, owner));
                     }
                     Err(e) => {
                         log::error!("Polling bind error {:?}", e);
-                        self.output.push_back_safe((
-                            BackendIncoming::UdpListenResult {
+                        self.output.push_back_safe(BackendIncoming::Event(
+                            owner,
+                            BackendIncomingEvent::UdpListenResult {
                                 bind: addr,
                                 result: Err(e),
                             },
-                            owner,
                         ));
                     }
                 }
@@ -303,8 +311,10 @@ impl<const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize> BackendOwner
                     }
                 }
 
-                self.output
-                    .push_back_safe((BackendIncoming::TunBindResult { result: Ok(slot) }, owner));
+                self.output.push_back_safe(BackendIncoming::Event(
+                    owner,
+                    BackendIncomingEvent::TunBindResult { result: Ok(slot) },
+                ));
                 *self.sockets.get_mut_or_panic(slot) = Some(SocketType::Tun(fd, owner));
             }
             #[cfg(feature = "tun-tap")]
@@ -397,17 +407,22 @@ mod tests {
 
     use crate::{
         backend::{Backend, BackendIncoming, BackendOwner},
+        group_owner_type,
         task::Buffer,
-        NetOutgoing, Owner,
+        NetOutgoing, TaskGroupOwner,
     };
 
     use super::PollingBackend;
+
+    group_owner_type!(SimpleOwner);
 
     #[allow(unused_assignments)]
     #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
-        let mut backend = PollingBackend::<2, 2>::default();
+        use crate::backend::BackendIncomingEvent;
+
+        let mut backend = PollingBackend::<SimpleOwner, 2, 2>::default();
 
         let mut addr1 = None;
         let mut slot1 = 0;
@@ -417,7 +432,7 @@ mod tests {
         let mut buf = [0; 1500];
 
         backend.on_action(
-            Owner::worker(1),
+            SimpleOwner(1),
             NetOutgoing::UdpListen {
                 addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 reuse: false,
@@ -425,8 +440,11 @@ mod tests {
         );
         backend.poll_incoming(Duration::from_millis(100));
         match backend.pop_incoming(&mut buf) {
-            Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
-                assert_eq!(owner, Owner::worker(1));
+            Some(BackendIncoming::Event(
+                owner,
+                BackendIncomingEvent::UdpListenResult { bind, result },
+            )) => {
+                assert_eq!(owner, SimpleOwner(1));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
                 let res = result.expect("Expected Ok");
                 addr1 = Some(res.0);
@@ -436,7 +454,7 @@ mod tests {
         }
 
         backend.on_action(
-            Owner::worker(2),
+            SimpleOwner(2),
             NetOutgoing::UdpListen {
                 addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 reuse: false,
@@ -444,8 +462,11 @@ mod tests {
         );
         backend.poll_incoming(Duration::from_millis(100));
         match backend.pop_incoming(&mut buf) {
-            Some((BackendIncoming::UdpListenResult { bind, result }, owner)) => {
-                assert_eq!(owner, Owner::worker(2));
+            Some(BackendIncoming::Event(
+                owner,
+                BackendIncomingEvent::UdpListenResult { bind, result },
+            )) => {
+                assert_eq!(owner, SimpleOwner(2));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
                 let res = result.expect("Expected Ok");
                 addr2 = Some(res.0);
@@ -456,7 +477,7 @@ mod tests {
 
         assert_ne!(addr1, addr2);
         backend.on_action(
-            Owner::worker(1),
+            SimpleOwner(1),
             NetOutgoing::UdpPacket {
                 slot: slot1,
                 to: addr2.expect(""),
@@ -467,8 +488,11 @@ mod tests {
         backend.poll_incoming(Duration::from_millis(100));
         for _ in 0..10 {
             match backend.pop_incoming(&mut buf) {
-                Some((BackendIncoming::UdpPacket { from, slot, len }, owner)) => {
-                    assert_eq!(owner, Owner::worker(2));
+                Some(BackendIncoming::Event(
+                    owner,
+                    BackendIncomingEvent::UdpPacket { from, slot, len },
+                )) => {
+                    assert_eq!(owner, SimpleOwner(2));
                     assert_eq!(from, addr1.expect(""));
                     assert_eq!(slot, slot2);
                     assert_eq!(&buf[0..len], b"hello");
@@ -478,10 +502,10 @@ mod tests {
             }
         }
 
-        backend.remove_owner(Owner::worker(1));
+        backend.remove_owner(SimpleOwner(1));
         assert_eq!(backend.socket_count(), 2);
 
-        backend.remove_owner(Owner::worker(2));
+        backend.remove_owner(SimpleOwner(2));
         assert_eq!(backend.socket_count(), 1);
     }
 }
