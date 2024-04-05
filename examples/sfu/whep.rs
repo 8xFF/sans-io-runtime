@@ -110,7 +110,7 @@ impl WhepTask {
                     return Some(TaskOutput::Net(NetOutgoing::UdpPacket {
                         slot: self.backend_slot,
                         to: send.destination,
-                        data: Buffer::Vec(send.contents.into()),
+                        data: Buffer::from(send.contents.to_vec()),
                     }));
                 }
                 Output::Event(e) => match e {
@@ -210,7 +210,7 @@ impl Task<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent> for WhepTask 
                 } => {
                     if let Err(e) = self.rtc.handle_input(Input::Receive(
                         now,
-                        Receive::new(Protocol::Udp, from, self.backend_addr, data)
+                        Receive::new(Protocol::Udp, from, self.backend_addr, &data)
                             .expect("Should parse udp"),
                     )) {
                         log::error!("Error handling udp: {}", e);

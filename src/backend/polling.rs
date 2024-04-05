@@ -151,7 +151,7 @@ impl<Owner, const SOCKET_LIMIT: usize, const STACK_QUEUE_SIZE: usize> Default
     for PollingBackend<Owner, SOCKET_LIMIT, STACK_QUEUE_SIZE>
 {
     fn default() -> Self {
-        let poll = Arc::new(Poller::new().expect("should create mio-poll"));
+        let poll = Arc::new(Poller::new().expect("should create poll"));
         let awake_flag = Arc::new(AtomicBool::new(false));
         Self {
             poll: poll.clone(),
@@ -407,9 +407,7 @@ mod tests {
 
     use crate::{
         backend::{Backend, BackendIncoming, BackendOwner},
-        group_owner_type,
-        task::Buffer,
-        NetOutgoing, TaskGroupOwner,
+        group_owner_type, NetOutgoing, TaskGroupOwner,
     };
 
     use super::PollingBackend;
@@ -420,7 +418,7 @@ mod tests {
     #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
-        use crate::backend::BackendIncomingEvent;
+        use crate::{backend::BackendIncomingEvent, Buffer};
 
         let mut backend = PollingBackend::<SimpleOwner, 2, 2>::default();
 
@@ -481,7 +479,7 @@ mod tests {
             NetOutgoing::UdpPacket {
                 slot: slot1,
                 to: addr2.expect(""),
-                data: Buffer::Ref(b"hello"),
+                data: Buffer::from(b"hello".as_slice()),
             },
         );
 

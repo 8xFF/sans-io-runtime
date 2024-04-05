@@ -1,4 +1,5 @@
 pub mod backend;
+mod buffer;
 pub mod bus;
 pub mod collections;
 mod controller;
@@ -6,11 +7,12 @@ mod task;
 mod trace;
 mod worker;
 
+pub use buffer::*;
 pub use controller::Controller;
 pub use task::{
     group::{TaskGroup, TaskGroupInput, TaskGroupOutput, TaskGroupOwner},
     switcher::TaskSwitcher,
-    Buffer, NetIncoming, NetOutgoing, Task, TaskInput, TaskOutput,
+    NetIncoming, NetOutgoing, Task, TaskInput, TaskOutput,
 };
 pub use trace::*;
 pub use worker::{WorkerInner, WorkerInnerInput, WorkerInnerOutput, WorkerStats};

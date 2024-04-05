@@ -7,8 +7,8 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::PollBackend, Buffer, Controller, NetIncoming, NetOutgoing, TaskInput, TaskOutput,
-    WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    backend::PollBackend, Controller, NetIncoming, NetOutgoing, TaskInput, TaskOutput, WorkerInner,
+    WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -92,7 +92,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
                     TaskOutput::Net(NetOutgoing::UdpPacket {
                         slot,
                         to: from,
-                        data: Buffer::Vec(data.to_vec()),
+                        data: data.freeze(),
                     }),
                 ))
             }

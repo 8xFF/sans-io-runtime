@@ -4,17 +4,11 @@ use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use crate::task::NetOutgoing;
 
-#[cfg(feature = "mio-backend")]
-mod mio;
-
 #[cfg(feature = "poll-backend")]
 mod poll;
 
 #[cfg(feature = "polling-backend")]
 mod polling;
-
-#[cfg(feature = "mio-backend")]
-pub use mio::MioBackend;
 
 #[cfg(feature = "poll-backend")]
 pub use poll::PollBackend;

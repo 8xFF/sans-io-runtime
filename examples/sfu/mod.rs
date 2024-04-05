@@ -329,7 +329,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
                     None
                 }
                 TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }) => {
-                    match self.shared_udp.map_remote(from, data) {
+                    match self.shared_udp.map_remote(from, &data) {
                         Some(TaskId::Whip(index)) => {
                             self.switcher.queue_flag_task(WhipTask::TYPE as usize);
                             let owner = WhipOwner(index);

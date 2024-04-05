@@ -10,9 +10,9 @@ use crate::backend::tun::TunFd;
 #[cfg(feature = "udp")]
 use std::net::SocketAddr;
 
-use std::{ops::Deref, time::Instant};
+use std::time::Instant;
 
-use crate::{backend::BackendIncomingEvent, bus::BusEvent};
+use crate::{backend::BackendIncomingEvent, bus::BusEvent, Buffer, BufferMut};
 
 pub mod group;
 pub mod switcher;
@@ -29,14 +29,14 @@ pub enum NetIncoming<'a> {
     UdpPacket {
         slot: usize,
         from: SocketAddr,
-        data: &'a mut [u8],
+        data: BufferMut<'a>,
     },
     #[cfg(feature = "tun-tap")]
     TunBindResult {
         result: Result<usize, std::io::Error>,
     },
     #[cfg(feature = "tun-tap")]
-    TunPacket { slot: usize, data: &'a mut [u8] },
+    TunPacket { slot: usize, data: BufferMut<'a> },
 }
 
 impl<'a> NetIncoming<'a> {
@@ -49,37 +49,22 @@ impl<'a> NetIncoming<'a> {
             #[cfg(feature = "udp")]
             BackendIncomingEvent::UdpPacket { from, slot, len } => {
                 let data = &mut buf[..len];
-                Self::UdpPacket { from, slot, data }
+                Self::UdpPacket {
+                    from,
+                    slot,
+                    data: BufferMut::from_slice_raw(buf, 0..len),
+                }
             }
             #[cfg(feature = "tun-tap")]
             BackendIncomingEvent::TunBindResult { result } => Self::TunBindResult { result },
             #[cfg(feature = "tun-tap")]
             BackendIncomingEvent::TunPacket { slot, len } => {
                 let data = &mut buf[..len];
-                Self::TunPacket { slot, data }
+                Self::TunPacket {
+                    slot,
+                    data: BufferMut::from_slice_raw(buf, 0..len),
+                }
             }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Buffer<'a> {
-    Ref(&'a [u8]),
-    Vec(Vec<u8>),
-}
-
-impl<'a> From<&'a [u8]> for Buffer<'a> {
-    fn from(value: &'a [u8]) -> Self {
-        Buffer::Ref(value)
-    }
-}
-
-impl<'a> Deref for Buffer<'a> {
-    type Target = [u8];
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Buffer::Ref(data) => data,
-            Buffer::Vec(data) => data,
         }
     }
 }

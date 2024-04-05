@@ -81,7 +81,7 @@ impl Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event> for EchoTask {
                             .push_back(TaskOutput::Net(NetOutgoing::UdpPacket {
                                 slot: self.local_backend_slot,
                                 to: self.cfg.dest,
-                                data: Buffer::Vec([0; 1000].to_vec()),
+                                data: Buffer::from([0; 1000].to_vec()),
                             }))
                             .print_err2("Should push ok");
                     }
@@ -97,7 +97,7 @@ impl Task<ExtIn, ExtOut, ChannelId, ChannelId, Event, Event> for EchoTask {
                     Some(TaskOutput::Net(NetOutgoing::UdpPacket {
                         slot,
                         to: from,
-                        data: Buffer::Ref(data),
+                        data: data.freeze(),
                     }))
                 }
             }

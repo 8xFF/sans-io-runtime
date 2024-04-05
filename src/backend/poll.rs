@@ -28,7 +28,7 @@
 //! // Send an outgoing UDP packet
 //! let slot = 0;
 //! let to = SocketAddr::from(([127, 0, 0, 1], 2000));
-//! let data = Buffer::Ref(b"hello");
+//! let data = Buffer::from(b"hello".as_slice());
 //! backend.on_action((), NetOutgoing::UdpPacket { slot, to, data });
 //!
 //! // Unregister an owner and remove associated sockets
@@ -344,9 +344,7 @@ mod tests {
 
     use crate::{
         backend::{Backend, BackendIncoming, BackendOwner},
-        group_owner_type,
-        task::Buffer,
-        NetOutgoing, TaskGroupOwner,
+        group_owner_type, NetOutgoing, TaskGroupOwner,
     };
 
     use super::PollBackend;
@@ -357,7 +355,7 @@ mod tests {
     #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
-        use crate::backend::BackendIncomingEvent;
+        use crate::{backend::BackendIncomingEvent, Buffer};
 
         let mut backend = PollBackend::<SimpleOwner, 2, 2>::default();
 
@@ -419,7 +417,7 @@ mod tests {
             NetOutgoing::UdpPacket {
                 slot: slot1,
                 to: addr2.expect(""),
-                data: Buffer::Ref(b"hello"),
+                data: Buffer::from(b"hello".as_slice()),
             },
         );
 
