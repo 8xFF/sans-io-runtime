@@ -16,7 +16,7 @@
 //! let mut backend = PollBackend::<(), 8, 64>::default();
 //!
 //! // Register an owner and bind a UDP socket
-//! backend.on_action((), NetOutgoing::UdpListen { addr: SocketAddr::from(([127, 0, 0, 1], 0)), reuse: false });
+//! BackendOutgoing::UdpListen { addr: SocketAddr::from(([127, 0, 0, 1], 0)), reuse: false });
 //!
 //! let mut buf = [0; 1500];
 //!
@@ -29,7 +29,7 @@
 //! let slot = 0;
 //! let to = SocketAddr::from(([127, 0, 0, 1], 2000));
 //! let data = Buffer::from(b"hello".as_slice());
-//! backend.on_action((), NetOutgoing::UdpPacket { slot, to, data });
+//! BackendOutgoing::UdpPacket { slot, to, data });
 //!
 //! // Unregister an owner and remove associated sockets
 //! backend.remove_owner(());
@@ -47,10 +47,9 @@ use std::{
 use crate::{
     backend::BackendOwner,
     collections::{DynamicDeque, DynamicVec},
-    NetOutgoing,
 };
 
-use super::{Awaker, Backend, BackendIncoming, BackendIncomingEvent};
+use super::{Awaker, Backend, BackendIncomingEventRaw, BackendIncomingRaw, BackendOutgoing};
 
 #[cfg(feature = "tun-tap")]
 use std::io::{Read, Write};
@@ -64,7 +63,7 @@ enum SocketType<Owner> {
 
 pub struct PollBackend<Owner, const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> {
     sockets: DynamicVec<Option<SocketType<Owner>>, SOCKET_STACK_SIZE>,
-    output: DynamicDeque<BackendIncoming<Owner>, QUEUE_STACK_SIZE>,
+    output: DynamicDeque<BackendIncomingRaw<Owner>, QUEUE_STACK_SIZE>,
     cycle_count: u64,
     last_poll_socket: Option<usize>,
 }
@@ -141,11 +140,11 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const STACK_QUE
         }
         self.cycle_count += 1;
         // We need manual awake for now
-        self.output.push_back_safe(BackendIncoming::Awake);
+        self.output.push_back_safe(BackendIncomingRaw::Awake);
         std::thread::sleep(timeout);
     }
 
-    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<BackendIncoming<Owner>> {
+    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<BackendIncomingRaw<Owner>> {
         if let Some(out) = self.output.pop_front() {
             return Some(out);
         }
@@ -160,9 +159,9 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const STACK_QUE
                     #[cfg(feature = "udp")]
                     SocketType::Udp(socket, _addr, owner) => {
                         if let Ok((size, remote)) = socket.recv_from(buf) {
-                            return Some(BackendIncoming::Event(
+                            return Some(BackendIncomingRaw::Event(
                                 *owner,
-                                BackendIncomingEvent::UdpPacket {
+                                BackendIncomingEventRaw::UdpPacket {
                                     slot: last_poll_socket,
                                     from: remote,
                                     len: size,
@@ -174,9 +173,9 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const STACK_QUE
                     SocketType::Tun(fd, owner) => {
                         if fd.read {
                             if let Ok(size) = fd.fd.read(buf) {
-                                return Some(BackendIncoming::Event(
+                                return Some(BackendIncomingRaw::Event(
                                     *owner,
-                                    BackendIncomingEvent::TunPacket {
+                                    BackendIncomingEventRaw::TunPacket {
                                         slot: last_poll_socket,
                                         len: size,
                                     },
@@ -205,18 +204,18 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const STACK_QUE
 impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZE: usize>
     BackendOwner<Owner> for PollBackend<Owner, SOCKET_LIMIT, QUEUE_SIZE>
 {
-    fn on_action(&mut self, owner: Owner, action: NetOutgoing) {
+    fn on_action(&mut self, owner: Owner, action: BackendOutgoing) {
         match action {
             #[cfg(feature = "udp")]
-            NetOutgoing::UdpListen { addr, reuse } => {
+            BackendOutgoing::UdpListen { addr, reuse } => {
                 log::info!("PollBackend: UdpListen {addr}, reuse: {reuse}");
                 match Self::create_udp(addr, reuse) {
                     Ok(socket) => {
                         let local_addr = socket.local_addr().expect("should access udp local_addr");
                         let slot = self.select_slot();
-                        self.output.push_back_safe(BackendIncoming::Event(
+                        self.output.push_back_safe(BackendIncomingRaw::Event(
                             owner,
-                            BackendIncomingEvent::UdpListenResult {
+                            BackendIncomingEventRaw::UdpListenResult {
                                 bind: addr,
                                 result: Ok((local_addr, slot)),
                             },
@@ -226,9 +225,9 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                     }
                     Err(e) => {
                         log::error!("Poll bind error {:?}", e);
-                        self.output.push_back_safe(BackendIncoming::Event(
+                        self.output.push_back_safe(BackendIncomingRaw::Event(
                             owner,
-                            BackendIncomingEvent::UdpListenResult {
+                            BackendIncomingEventRaw::UdpListenResult {
                                 bind: addr,
                                 result: Err(e),
                             },
@@ -237,7 +236,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 }
             }
             #[cfg(feature = "udp")]
-            NetOutgoing::UdpUnlisten { slot } => {
+            BackendOutgoing::UdpUnlisten { slot } => {
                 if let Some(slot) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(_socket, _, _)) = slot {
                         *slot = None;
@@ -245,7 +244,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 }
             }
             #[cfg(feature = "udp")]
-            NetOutgoing::UdpPacket { to, slot, data } => {
+            BackendOutgoing::UdpPacket { to, slot, data } => {
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
                         if let Err(e) = socket.send_to(&data, to) {
@@ -259,7 +258,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 }
             }
             #[cfg(feature = "udp")]
-            NetOutgoing::UdpPackets { to, slot, data } => {
+            BackendOutgoing::UdpPackets { to, slot, data } => {
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Udp(socket, _, _)) = socket {
                         for dest in to {
@@ -275,16 +274,16 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 }
             }
             #[cfg(feature = "tun-tap")]
-            NetOutgoing::TunBind { fd } => {
+            BackendOutgoing::TunBind { fd } => {
                 let slot = self.select_slot();
-                self.output.push_back_safe(BackendIncoming::Event(
+                self.output.push_back_safe(BackendIncomingRaw::Event(
                     owner,
-                    BackendIncomingEvent::TunBindResult { result: Ok(slot) },
+                    BackendIncomingEventRaw::TunBindResult { result: Ok(slot) },
                 ));
                 *self.sockets.get_mut_or_panic(slot) = Some(SocketType::Tun(fd, owner));
             }
             #[cfg(feature = "tun-tap")]
-            NetOutgoing::TunUnbind { slot } => {
+            BackendOutgoing::TunUnbind { slot } => {
                 if let Some(slot) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Tun(_, _)) = slot {
                         *slot = None;
@@ -292,7 +291,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 }
             }
             #[cfg(feature = "tun-tap")]
-            NetOutgoing::TunPacket { slot, data } => {
+            BackendOutgoing::TunPacket { slot, data } => {
                 if let Some(socket) = self.sockets.get_mut(slot) {
                     if let Some(SocketType::Tun(fd, _)) = socket {
                         if let Err(e) = fd.fd.write_all(&data) {
@@ -343,8 +342,8 @@ mod tests {
     use std::{net::SocketAddr, time::Duration};
 
     use crate::{
-        backend::{Backend, BackendIncoming, BackendOwner},
-        group_owner_type, NetOutgoing, TaskGroupOwner,
+        backend::{Backend, BackendIncomingRaw, BackendOwner},
+        group_owner_type,
     };
 
     use super::PollBackend;
@@ -355,7 +354,10 @@ mod tests {
     #[cfg(feature = "udp")]
     #[test]
     fn test_on_action_udp_listen_success() {
-        use crate::{backend::BackendIncomingEvent, Buffer};
+        use crate::{
+            backend::{BackendIncomingEventRaw, BackendOutgoing},
+            Buffer,
+        };
 
         let mut backend = PollBackend::<SimpleOwner, 2, 2>::default();
 
@@ -368,7 +370,7 @@ mod tests {
 
         backend.on_action(
             SimpleOwner(1),
-            NetOutgoing::UdpListen {
+            BackendOutgoing::UdpListen {
                 addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 reuse: false,
             },
@@ -376,9 +378,9 @@ mod tests {
         backend.poll_incoming(Duration::from_secs(1));
         let res = backend.pop_incoming(&mut buf);
         match res {
-            Some(BackendIncoming::Event(
+            Some(BackendIncomingRaw::Event(
                 owner,
-                BackendIncomingEvent::UdpListenResult { bind, result },
+                BackendIncomingEventRaw::UdpListenResult { bind, result },
             )) => {
                 assert_eq!(owner, SimpleOwner(1));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
@@ -391,16 +393,16 @@ mod tests {
 
         backend.on_action(
             SimpleOwner(2),
-            NetOutgoing::UdpListen {
+            BackendOutgoing::UdpListen {
                 addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 reuse: false,
             },
         );
         backend.poll_incoming(Duration::from_secs(1));
         match backend.pop_incoming(&mut buf) {
-            Some(BackendIncoming::Event(
+            Some(BackendIncomingRaw::Event(
                 owner,
-                BackendIncomingEvent::UdpListenResult { bind, result },
+                BackendIncomingEventRaw::UdpListenResult { bind, result },
             )) => {
                 assert_eq!(owner, SimpleOwner(2));
                 assert_eq!(bind, SocketAddr::from(([127, 0, 0, 1], 0)));
@@ -414,7 +416,7 @@ mod tests {
         assert_ne!(addr1, addr2);
         backend.on_action(
             SimpleOwner(1),
-            NetOutgoing::UdpPacket {
+            BackendOutgoing::UdpPacket {
                 slot: slot1,
                 to: addr2.expect(""),
                 data: Buffer::from(b"hello".as_slice()),
@@ -423,14 +425,14 @@ mod tests {
 
         backend.poll_incoming(Duration::from_secs(1));
         match backend.pop_incoming(&mut buf) {
-            Some(BackendIncoming::Awake) => {}
+            Some(BackendIncomingRaw::Awake) => {}
             _ => panic!("Expected Awake"),
         }
 
         match backend.pop_incoming(&mut buf) {
-            Some(BackendIncoming::Event(
+            Some(BackendIncomingRaw::Event(
                 owner,
-                BackendIncomingEvent::UdpPacket { from, slot, len },
+                BackendIncomingEventRaw::UdpPacket { from, slot, len },
             )) => {
                 assert_eq!(owner, SimpleOwner(2));
                 assert_eq!(from, addr1.expect(""));

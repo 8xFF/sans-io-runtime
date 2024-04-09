@@ -7,9 +7,8 @@ use std::{
 };
 
 use sans_io_runtime::{
-    backend::PollBackend, group_owner_type, Controller, Task, TaskGroup, TaskGroupInput,
-    TaskGroupOwner, TaskInput, TaskOutput, TaskSwitcher, WorkerInner, WorkerInnerInput,
-    WorkerInnerOutput,
+    backend::PollBackend, group_owner_type, Controller, Task, TaskGroup, TaskSwitcher, WorkerInner,
+    WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ICfg = ();
@@ -85,37 +84,22 @@ impl Task1 {
     }
 }
 
-impl Task<Type1ExtIn, Type1ExtOut, Type1Channel, Type1Channel, Type1Event, Type1Event> for Task1 {
-    const TYPE: u16 = 0;
-
-    fn on_tick<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
+impl Task<(), ()> for Task1 {
+    fn on_tick<'a>(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
-    fn on_event<'b>(
-        &mut self,
-        _now: Instant,
-        _input: TaskInput<'b, Type1ExtIn, Type1Channel, Type1Event>,
-    ) -> Option<TaskOutput<'b, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
+    fn on_event<'b>(&mut self, _now: Instant, _input: ()) -> Option<()> {
         None
     }
 
-    fn pop_output<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
+    fn pop_output<'a>(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
-    fn shutdown<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<TaskOutput<'a, Type1ExtOut, Type1Channel, Type1Channel, Type1Event>> {
+    fn shutdown<'a>(&mut self, _now: Instant) -> Option<()> {
         log::info!("task1 received shutdown");
-        Some(TaskOutput::Destroy)
+        Some(())
     }
 }
 
@@ -130,37 +114,22 @@ impl Task2 {
     }
 }
 
-impl Task<Type2ExtIn, Type2ExtOut, Type2Channel, Type2Channel, Type2Event, Type2Event> for Task2 {
-    const TYPE: u16 = 1;
-
-    fn on_tick<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
+impl Task<(), ()> for Task2 {
+    fn on_tick<'a>(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
-    fn on_event<'b>(
-        &mut self,
-        _now: Instant,
-        _input: TaskInput<'b, Type2ExtIn, Type2Channel, Type2Event>,
-    ) -> Option<TaskOutput<'b, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
+    fn on_event<'b>(&mut self, _now: Instant, _input: ()) -> Option<()> {
         None
     }
 
-    fn pop_output<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
+    fn pop_output<'a>(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
-    fn shutdown<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<TaskOutput<'a, Type2ExtOut, Type2Channel, Type2Channel, Type2Event>> {
+    fn shutdown<'a>(&mut self, _now: Instant) -> Option<()> {
         log::info!("task2 received shutdown");
-        Some(TaskOutput::Destroy)
+        Some(())
     }
 }
 
@@ -175,28 +144,8 @@ enum OwnerType {
 
 struct EchoWorkerInner {
     worker: u16,
-    echo_type1: TaskGroup<
-        Type1Owner,
-        Type1ExtIn,
-        Type1ExtOut,
-        Type1Channel,
-        Type1Channel,
-        Type1Event,
-        Type1Event,
-        Task1,
-        16,
-    >,
-    echo_type2: TaskGroup<
-        Type2Owner,
-        Type2ExtIn,
-        Type2ExtOut,
-        Type2Channel,
-        Type2Channel,
-        Type2Event,
-        Type2Event,
-        Task2,
-        16,
-    >,
+    task_type1: TaskGroup<(), (), Task1, 16>,
+    task_type2: TaskGroup<(), (), Task2, 16>,
     switcher: TaskSwitcher,
 }
 
@@ -204,7 +153,7 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
     for EchoWorkerInner
 {
     fn tasks(&self) -> usize {
-        self.echo_type1.tasks() + self.echo_type2.tasks()
+        self.task_type1.tasks() + self.task_type1.tasks()
     }
 
     fn worker_index(&self) -> u16 {
@@ -214,8 +163,8 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
     fn build(worker: u16, _cfg: ICfg) -> Self {
         Self {
             worker,
-            echo_type1: TaskGroup::new(),
-            echo_type2: TaskGroup::new(),
+            task_type1: TaskGroup::default(),
+            task_type2: TaskGroup::default(),
             switcher: TaskSwitcher::new(2),
         }
     }
@@ -223,10 +172,10 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
     fn spawn(&mut self, _now: Instant, cfg: TestSCfg) {
         match cfg {
             TestSCfg::Type1(cfg) => {
-                self.echo_type1.add_task(Task1::new(cfg));
+                self.task_type1.add_task(Task1::new(cfg));
             }
             TestSCfg::Type2(cfg) => {
-                self.echo_type2.add_task(Task2::new(cfg));
+                self.task_type2.add_task(Task2::new(cfg));
             }
         }
     }
@@ -240,13 +189,13 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
         loop {
             match switcher.looper_current(now)? {
                 0 => {
-                    if let Some(e) = switcher.looper_process(self.echo_type1.on_tick(now)) {
-                        return Some(e.into());
+                    if let Some(_e) = switcher.looper_process(self.task_type1.on_tick(now)) {
+                        // return Some(e.into());
                     }
                 }
                 1 => {
-                    if let Some(e) = switcher.looper_process(self.echo_type2.on_tick(now)) {
-                        return Some(e.into());
+                    if let Some(_e) = switcher.looper_process(self.task_type2.on_tick(now)) {
+                        // return Some(e.into());
                     }
                 }
                 _ => unreachable!(),
@@ -256,29 +205,11 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
 
     fn on_event<'a>(
         &mut self,
-        now: Instant,
-        event: WorkerInnerInput<'a, OwnerType, TestExtIn, TestChannel, TestEvent>,
+        _now: Instant,
+        _event: WorkerInnerInput<'a, OwnerType, TestExtIn, TestChannel, TestEvent>,
     ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
     {
-        match event {
-            WorkerInnerInput::Task(owner, event) => match owner {
-                OwnerType::Type1(o) => {
-                    let res = self
-                        .echo_type1
-                        .on_event(now, TaskGroupInput(o, event.convert_into()?))?;
-                    self.switcher.queue_flag_task(0);
-                    Some(res.into())
-                }
-                OwnerType::Type2(o) => {
-                    let res = self
-                        .echo_type2
-                        .on_event(now, TaskGroupInput(o, event.convert_into()?))?;
-                    self.switcher.queue_flag_task(1);
-                    Some(res.into())
-                }
-            },
-            _ => unreachable!(),
-        }
+        None
     }
 
     fn pop_output<'a>(
@@ -290,13 +221,13 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
         loop {
             match switcher.queue_current()? {
                 0 => {
-                    if let Some(e) = switcher.queue_process(self.echo_type1.pop_output(now)) {
-                        return Some(e.into());
+                    if let Some(_e) = switcher.queue_process(self.task_type1.pop_output(now)) {
+                        // return Some(e.into());
                     }
                 }
                 1 => {
-                    if let Some(e) = switcher.queue_process(self.echo_type2.pop_output(now)) {
-                        return Some(e.into());
+                    if let Some(_e) = switcher.queue_process(self.task_type2.pop_output(now)) {
+                        // return Some(e.into());
                     }
                 }
                 _ => unreachable!(),
@@ -312,13 +243,16 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
         loop {
             match self.switcher.looper_current(now)? {
                 0 => {
-                    if let Some(e) = self.switcher.looper_process(self.echo_type1.shutdown(now)) {
-                        return Some(e.into());
+                    self.switcher.looper_process(None::<()>);
+                    if let Some((index, _e)) = self.task_type1.shutdown(now) {
+                        self.task_type1.remove_task(index);
+                        // return Some(e.into());
                     }
                 }
                 1 => {
-                    if let Some(e) = self.switcher.looper_process(self.echo_type2.shutdown(now)) {
-                        return Some(e.into());
+                    self.switcher.looper_process(None::<()>);
+                    if let Some((index, _e)) = self.task_type2.shutdown(now) {
+                        self.task_type2.remove_task(index);
                     }
                 }
                 _ => unreachable!(),

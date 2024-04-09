@@ -6,9 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use sans_io_runtime::backend::{BackendIncoming, BackendOutgoing};
 use sans_io_runtime::{
-    backend::PollBackend, Controller, NetIncoming, NetOutgoing, TaskInput, TaskOutput, WorkerInner,
-    WorkerInnerInput, WorkerInnerOutput,
+    backend::PollBackend, Controller, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -37,12 +37,12 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         Self {
             worker,
             backend_slot: 0,
-            output: VecDeque::from([WorkerInnerOutput::Task(
+            output: VecDeque::from([WorkerInnerOutput::Net(
                 (),
-                TaskOutput::Net(NetOutgoing::UdpListen {
+                BackendOutgoing::UdpListen {
                     addr: cfg.bind,
                     reuse: true,
-                }),
+                },
             )]),
             shutdown: false,
         }
@@ -73,27 +73,21 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         event: WorkerInnerInput<'a, OwnerType, ExtIn, ChannelId, Event>,
     ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         match event {
-            WorkerInnerInput::Task(
-                _owner,
-                TaskInput::Net(NetIncoming::UdpListenResult { bind, result }),
-            ) => {
+            WorkerInnerInput::Net(_owner, BackendIncoming::UdpListenResult { bind, result }) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
                 self.backend_slot = result.expect("Should bind success").1;
                 None
             }
-            WorkerInnerInput::Task(
-                _owner,
-                TaskInput::Net(NetIncoming::UdpPacket { from, slot, data }),
-            ) => {
+            WorkerInnerInput::Net(_owner, BackendIncoming::UdpPacket { from, slot, data }) => {
                 assert!(data.len() <= 1500, "data too large");
 
-                Some(WorkerInnerOutput::Task(
+                Some(WorkerInnerOutput::Net(
                     (),
-                    TaskOutput::Net(NetOutgoing::UdpPacket {
+                    BackendOutgoing::UdpPacket {
                         slot,
                         to: from,
                         data: data.freeze(),
-                    }),
+                    },
                 ))
             }
             _ => None,
@@ -116,11 +110,11 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         }
         log::info!("EchoServer {} shutdown", self.worker);
         self.shutdown = true;
-        self.output.push_back(WorkerInnerOutput::Task(
+        self.output.push_back(WorkerInnerOutput::Net(
             (),
-            TaskOutput::Net(NetOutgoing::UdpUnlisten {
+            BackendOutgoing::UdpUnlisten {
                 slot: self.backend_slot,
-            }),
+            },
         ));
         self.output.pop_front()
     }

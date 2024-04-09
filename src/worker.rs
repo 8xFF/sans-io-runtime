@@ -5,11 +5,13 @@ use std::{
 };
 
 use crate::{
-    backend::{Backend, BackendIncoming},
-    bus::{
-        BusEvent, BusEventSource, BusLocalHub, BusPubSubFeature, BusSendSingleFeature, BusWorker,
+    backend::{
+        Backend, BackendIncoming, BackendIncomingEventRaw, BackendIncomingRaw, BackendOutgoing,
     },
-    NetIncoming, TaskInput, TaskOutput,
+    bus::{
+        BusControl, BusEventSource, BusLocalHub, BusPubSubFeature, BusSendSingleFeature, BusWorker,
+    },
+    BufferMut,
 };
 
 #[derive(Debug, Clone)]
@@ -44,18 +46,21 @@ impl WorkerStats {
 }
 
 pub enum WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event> {
-    Task(Owner, TaskInput<'a, ExtIn, ChannelId, Event>),
+    Net(Owner, BackendIncoming<'a>),
+    Bus(Owner, ChannelId, Event),
     Ext(ExtIn),
 }
 
 pub enum WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg> {
-    Task(Owner, TaskOutput<'a, ExtOut, ChannelId, ChannelId, Event>),
+    Net(Owner, BackendOutgoing<'a>),
+    Bus(Owner, BusControl<ChannelId, Event>),
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
     Spawn(SCfg),
+    Destroy(Owner),
 }
 
-pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
+pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
     fn build(worker: u16, cfg: ICfg) -> Self;
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
@@ -63,20 +68,20 @@ pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelIn, Event, ICfg, SCfg> {
     fn on_tick<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
     fn on_event<'a>(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, Owner, ExtIn, ChannelIn, Event>,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
+        event: WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
     fn pop_output<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
     fn shutdown<'a>(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelIn, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
 }
 
 pub(crate) struct Worker<
@@ -200,12 +205,36 @@ impl<
 
         while let Some(event) = self.backend.pop_incoming(&mut self.network_buffer) {
             match event {
-                BackendIncoming::Awake => self.on_awake(now),
-                BackendIncoming::Event(owner, event) => {
-                    let event = NetIncoming::from_backend(event, &mut self.network_buffer);
+                BackendIncomingRaw::Awake => self.on_awake(now),
+                BackendIncomingRaw::Event(owner, event) => {
+                    let event = match event {
+                        #[cfg(feature = "udp")]
+                        BackendIncomingEventRaw::UdpListenResult { bind, result } => {
+                            BackendIncoming::UdpListenResult { bind, result }
+                        }
+                        #[cfg(feature = "udp")]
+                        BackendIncomingEventRaw::UdpPacket { slot, from, len } => {
+                            BackendIncoming::UdpPacket {
+                                slot,
+                                from,
+                                data: BufferMut::from_slice_raw(&mut self.network_buffer, 0..len),
+                            }
+                        }
+                        #[cfg(feature = "tun")]
+                        BackendIncomingEventRaw::TunBindResult { result } => {
+                            BackendIncoming::TunBindResult { result }
+                        }
+                        #[cfg(feature = "tun")]
+                        BackendIncomingEventRaw::TunPacket { slot, len } => {
+                            BackendIncoming::TunPacket {
+                                slot,
+                                data: BufferMut::from_slice_raw(&mut self.network_buffer, 0..len),
+                            }
+                        }
+                    };
                     Self::on_input_event(
                         now,
-                        WorkerInnerInput::Task(owner, TaskInput::Net(event)),
+                        WorkerInnerInput::Net(owner, event),
                         &mut self.inner,
                         &mut self.inner_bus,
                         &mut self.worker_out,
@@ -281,10 +310,7 @@ impl<
                         for subscriber in subscribers {
                             Self::on_input_event(
                                 now,
-                                WorkerInnerInput::Task(
-                                    subscriber,
-                                    TaskInput::Bus(channel, event.clone()),
-                                ),
+                                WorkerInnerInput::Bus(subscriber, channel, event.clone()),
                                 &mut self.inner,
                                 &mut self.inner_bus,
                                 &mut self.worker_out,
@@ -341,37 +367,30 @@ impl<
                     .send(0, true, WorkerControlOut::Spawn(cfg))
                     .expect("Should send success with safe flag");
             }
-            WorkerInnerOutput::Task(owner, TaskOutput::Net(event)) => {
-                backend.on_action(owner, event);
+            WorkerInnerOutput::Net(owner, action) => {
+                backend.on_action(owner, action);
             }
-            WorkerInnerOutput::Task(owner, TaskOutput::Bus(event)) => match event {
-                BusEvent::ChannelSubscribe(channel) => {
+            WorkerInnerOutput::Bus(owner, event) => match event {
+                BusControl::ChannelSubscribe(channel) => {
                     if bus_local_hub.subscribe(owner, channel) {
                         log::info!("Worker {worker} subscribe to channel {:?}", channel);
                         inner_bus.subscribe(channel);
                     }
                 }
-                BusEvent::ChannelUnsubscribe(channel) => {
+                BusControl::ChannelUnsubscribe(channel) => {
                     if bus_local_hub.unsubscribe(owner, channel) {
                         log::info!("Worker {worker} unsubscribe from channel {:?}", channel);
                         inner_bus.unsubscribe(channel);
                     }
                 }
-                BusEvent::ChannelPublish(channel, safe, msg) => {
+                BusControl::ChannelPublish(channel, safe, msg) => {
                     inner_bus.publish(channel, safe, msg);
                 }
             },
-            WorkerInnerOutput::Task(owner, TaskOutput::Destroy) => {
+            WorkerInnerOutput::Destroy(owner) => {
                 log::info!("Worker {worker} destroy owner {:?}", owner);
                 backend.remove_owner(owner);
                 bus_local_hub.remove_owner(owner);
-            }
-            WorkerInnerOutput::Task(owner, TaskOutput::Ext(out)) => {
-                log::trace!("Worker {worker} send external from owner {:?}", owner);
-                // TODO don't hardcode 0
-                if let Err(e) = worker_out.send(0, true, WorkerControlOut::Ext(out)) {
-                    log::error!("Failed to send external: {:?}", e);
-                }
             }
             WorkerInnerOutput::Ext(safe, ext) => {
                 // TODO don't hardcode 0

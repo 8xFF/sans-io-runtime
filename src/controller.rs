@@ -197,6 +197,23 @@ impl<
         }
     }
 
+    pub fn send_to_best(&mut self, ext: ExtIn) {
+        // get worker index with lowest load
+        let best_worker = self
+            .worker_threads
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, w)| w.stats.load())
+            .map(|(i, _)| i)
+            .expect("Should have at least one worker");
+        if let Err(e) = self
+            .worker_control_bus
+            .send(best_worker, true, WorkerControlIn::Ext(ext))
+        {
+            log::error!("Failed to send to task: {:?}", e);
+        }
+    }
+
     pub fn pop_event(&mut self) -> Option<ExtOut> {
         self.output.pop_front()
     }

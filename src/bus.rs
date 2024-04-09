@@ -10,14 +10,14 @@ pub use local_hub::*;
 use crate::backend::Awaker;
 
 #[derive(Debug)]
-pub enum BusEvent<ChannelIn, ChannelOut, MSG> {
-    ChannelSubscribe(ChannelIn),
-    ChannelUnsubscribe(ChannelIn),
+pub enum BusControl<ChannelId, MSG> {
+    ChannelSubscribe(ChannelId),
+    ChannelUnsubscribe(ChannelId),
     /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
-    ChannelPublish(ChannelOut, bool, MSG),
+    ChannelPublish(ChannelId, bool, MSG),
 }
 
-impl<ChannelIn, ChannelOut, MSG> BusEvent<ChannelIn, ChannelOut, MSG> {
+impl<ChannelId, MSG> BusControl<ChannelId, MSG> {
     pub fn high_priority(&self) -> bool {
         match self {
             Self::ChannelSubscribe(_) => true,
@@ -26,18 +26,14 @@ impl<ChannelIn, ChannelOut, MSG> BusEvent<ChannelIn, ChannelOut, MSG> {
         }
     }
 
-    pub fn convert_into<
-        NChannelIn: From<ChannelIn>,
-        NChannelOut: From<ChannelOut>,
-        NMSG: From<MSG>,
-    >(
+    pub fn convert_into<NChannelId: From<ChannelId>, NMSG: From<MSG>>(
         self,
-    ) -> BusEvent<NChannelIn, NChannelOut, NMSG> {
+    ) -> BusControl<NChannelId, NMSG> {
         match self {
-            Self::ChannelSubscribe(channel) => BusEvent::ChannelSubscribe(channel.into()),
-            Self::ChannelUnsubscribe(channel) => BusEvent::ChannelUnsubscribe(channel.into()),
+            Self::ChannelSubscribe(channel) => BusControl::ChannelSubscribe(channel.into()),
+            Self::ChannelUnsubscribe(channel) => BusControl::ChannelUnsubscribe(channel.into()),
             Self::ChannelPublish(channel, safe, msg) => {
-                BusEvent::ChannelPublish(channel.into(), safe, msg.into())
+                BusControl::ChannelPublish(channel.into(), safe, msg.into())
             }
         }
     }

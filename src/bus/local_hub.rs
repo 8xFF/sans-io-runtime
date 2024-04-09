@@ -73,7 +73,7 @@ impl<Owner: Clone + Debug + PartialEq, ChannelId: Debug + Clone + Copy + Hash + 
 
 #[cfg(test)]
 mod tests {
-    use crate::{group_owner_type, TaskGroupOwner};
+    use crate::group_owner_type;
 
     use super::*;
 
