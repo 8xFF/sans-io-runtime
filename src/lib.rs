@@ -11,7 +11,10 @@ pub use buffer::*;
 pub use controller::Controller;
 pub use task::{group::TaskGroup, switcher::TaskSwitcher, Task};
 pub use trace::*;
-pub use worker::{WorkerInner, WorkerInnerInput, WorkerInnerOutput, WorkerStats};
+pub use worker::{
+    BusChannelControl, BusControl, BusEvent, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    WorkerStats,
+};
 
 #[macro_export]
 macro_rules! group_owner_type {

@@ -9,10 +9,64 @@ use crate::{
         Backend, BackendIncoming, BackendIncomingEventRaw, BackendIncomingRaw, BackendOutgoing,
     },
     bus::{
-        BusControl, BusEventSource, BusLocalHub, BusPubSubFeature, BusSendSingleFeature, BusWorker,
+        BusEventSource, BusLocalHub, BusPubSubFeature, BusSendMultiFeature, BusSendSingleFeature,
+        BusWorker,
     },
     BufferMut,
 };
+
+#[derive(Debug)]
+pub enum BusChannelControl<ChannelId, MSG> {
+    Subscribe(ChannelId),
+    Unsubscribe(ChannelId),
+    /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
+    Publish(ChannelId, bool, MSG),
+}
+
+impl<ChannelId, MSG> BusChannelControl<ChannelId, MSG> {
+    pub fn convert_into<NChannelId: From<ChannelId>, NMSG: From<MSG>>(
+        self,
+    ) -> BusChannelControl<NChannelId, NMSG> {
+        match self {
+            Self::Subscribe(channel) => BusChannelControl::Subscribe(channel.into()),
+            Self::Unsubscribe(channel) => BusChannelControl::Unsubscribe(channel.into()),
+            Self::Publish(channel, safe, msg) => {
+                BusChannelControl::Publish(channel.into(), safe, msg.into())
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum BusControl<Owner, ChannelId, MSG> {
+    Channel(Owner, BusChannelControl<ChannelId, MSG>),
+    Broadcast(bool, MSG),
+}
+
+impl<Owner, ChannelId, MSG> BusControl<Owner, ChannelId, MSG> {
+    pub fn high_priority(&self) -> bool {
+        match self {
+            Self::Channel(_, BusChannelControl::Subscribe(..)) => true,
+            Self::Channel(_, BusChannelControl::Unsubscribe(..)) => true,
+            _ => false,
+        }
+    }
+
+    pub fn convert_into<NOwner: From<Owner>, NChannelId: From<ChannelId>, NMSG: From<MSG>>(
+        self,
+    ) -> BusControl<Owner, NChannelId, NMSG> {
+        match self {
+            Self::Channel(owner, event) => BusControl::Channel(owner.into(), event.convert_into()),
+            Self::Broadcast(safe, msg) => BusControl::Broadcast(safe, msg.into()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum BusEvent<Owner, ChannelId, MSG> {
+    Broadcast(u16, MSG),
+    Channel(Owner, ChannelId, MSG),
+}
 
 #[derive(Debug, Clone)]
 pub enum WorkerControlIn<Ext: Clone, SCfg> {
@@ -47,13 +101,13 @@ impl WorkerStats {
 
 pub enum WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event> {
     Net(Owner, BackendIncoming<'a>),
-    Bus(Owner, ChannelId, Event),
+    Bus(BusEvent<Owner, ChannelId, Event>),
     Ext(ExtIn),
 }
 
 pub enum WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg> {
     Net(Owner, BackendOutgoing<'a>),
-    Bus(Owner, BusControl<ChannelId, Event>),
+    Bus(BusControl<Owner, ChannelId, Event>),
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
     Spawn(SCfg),
@@ -133,7 +187,7 @@ impl<
         Self {
             inner,
             tick,
-            last_tick: Instant::now(),
+            last_tick: Instant::now() - 2 * tick, //for ensure first tick as fast as possible
             bus_local_hub: Default::default(),
             inner_bus,
             backend,
@@ -250,7 +304,6 @@ impl<
         if now.elapsed().as_millis() > 15 {
             log::warn!("Worker process too long: {}", now.elapsed().as_millis());
         }
-        log::debug!("Worker process done in {}", now.elapsed().as_nanos());
     }
 
     fn on_input_tick(
@@ -310,7 +363,11 @@ impl<
                         for subscriber in subscribers {
                             Self::on_input_event(
                                 now,
-                                WorkerInnerInput::Bus(subscriber, channel, event.clone()),
+                                WorkerInnerInput::Bus(BusEvent::Channel(
+                                    subscriber,
+                                    channel,
+                                    event.clone(),
+                                )),
                                 &mut self.inner,
                                 &mut self.inner_bus,
                                 &mut self.worker_out,
@@ -319,6 +376,17 @@ impl<
                             );
                         }
                     }
+                }
+                BusEventSource::Broadcast(from) => {
+                    Self::on_input_event(
+                        now,
+                        WorkerInnerInput::Bus(BusEvent::Broadcast(from as u16, event.clone())),
+                        &mut self.inner,
+                        &mut self.inner_bus,
+                        &mut self.worker_out,
+                        &mut self.backend,
+                        &mut self.bus_local_hub,
+                    );
                 }
                 _ => panic!(
                     "Invalid channel source for task {:?}, only support channel",
@@ -370,21 +438,24 @@ impl<
             WorkerInnerOutput::Net(owner, action) => {
                 backend.on_action(owner, action);
             }
-            WorkerInnerOutput::Bus(owner, event) => match event {
-                BusControl::ChannelSubscribe(channel) => {
+            WorkerInnerOutput::Bus(event) => match event {
+                BusControl::Channel(owner, BusChannelControl::Subscribe(channel)) => {
                     if bus_local_hub.subscribe(owner, channel) {
                         log::info!("Worker {worker} subscribe to channel {:?}", channel);
                         inner_bus.subscribe(channel);
                     }
                 }
-                BusControl::ChannelUnsubscribe(channel) => {
+                BusControl::Channel(owner, BusChannelControl::Unsubscribe(channel)) => {
                     if bus_local_hub.unsubscribe(owner, channel) {
                         log::info!("Worker {worker} unsubscribe from channel {:?}", channel);
                         inner_bus.unsubscribe(channel);
                     }
                 }
-                BusControl::ChannelPublish(channel, safe, msg) => {
+                BusControl::Channel(_owner, BusChannelControl::Publish(channel, safe, msg)) => {
                     inner_bus.publish(channel, safe, msg);
+                }
+                BusControl::Broadcast(safe, msg) => {
+                    inner_bus.broadcast(safe, msg);
                 }
             },
             WorkerInnerOutput::Destroy(owner) => {
@@ -394,7 +465,7 @@ impl<
             }
             WorkerInnerOutput::Ext(safe, ext) => {
                 // TODO don't hardcode 0
-                log::trace!("Worker {worker} send external");
+                log::debug!("Worker {worker} send external");
                 if let Err(e) = worker_out.send(0, safe, WorkerControlOut::Ext(ext)) {
                     log::error!("Failed to send external: {:?}", e);
                 }

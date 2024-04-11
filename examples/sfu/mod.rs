@@ -8,7 +8,8 @@ use std::{
 use derive_more::Display;
 use sans_io_runtime::{
     backend::{BackendIncoming, BackendOutgoing},
-    group_owner_type, group_task, TaskSwitcher, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+    group_owner_type, group_task, BusControl, BusEvent, TaskSwitcher, WorkerInner,
+    WorkerInnerInput, WorkerInnerOutput,
 };
 use str0m::{
     change::DtlsCert,
@@ -260,7 +261,9 @@ impl SfuWorker {
         self.switcher.queue_flag_task(TaskType::Whip as usize);
         let owner = OwnerType::Whip(index.into());
         match out {
-            WhipOutput::Bus(control) => WorkerInnerOutput::Bus(owner, control.convert_into()),
+            WhipOutput::Bus(control) => {
+                WorkerInnerOutput::Bus(BusControl::Channel(owner, control.convert_into()))
+            }
             WhipOutput::UdpPacket { to, data } => WorkerInnerOutput::Net(
                 owner,
                 BackendOutgoing::UdpPacket {
@@ -290,7 +293,9 @@ impl SfuWorker {
         self.switcher.queue_flag_task(TaskType::Whep as usize);
         let owner = OwnerType::Whep(index.into());
         match out {
-            WhepOutput::Bus(control) => WorkerInnerOutput::Bus(owner, control.convert_into()),
+            WhepOutput::Bus(control) => {
+                WorkerInnerOutput::Bus(BusControl::Channel(owner, control.convert_into()))
+            }
             WhepOutput::UdpPacket { to, data } => WorkerInnerOutput::Net(
                 owner,
                 BackendOutgoing::UdpPacket {
@@ -419,7 +424,8 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
                     None
                 }
             },
-            WorkerInnerInput::Bus(owner, channel, event) => match (owner, event) {
+            WorkerInnerInput::Bus(BusEvent::Channel(owner, channel, event)) => match (owner, event)
+            {
                 (OwnerType::Whip(owner), SfuEvent::RequestKeyFrame(kind)) => {
                     let out = self.whip_group.on_event(
                         now,

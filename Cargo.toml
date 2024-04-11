@@ -24,7 +24,7 @@ convert-enum = "0.1.0"
 signal-hook = "0.3.17"
 
 [features]
-default = ["poll-backend", "polling-backend", "udp", "tun-tap"]
+default = ["poll-backend", "polling-backend", "udp"]
 tun-tap = ["tun"]
 udp = []
 polling-backend = ["polling", "socket2"]

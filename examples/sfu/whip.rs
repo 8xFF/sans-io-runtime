@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{bus::BusControl, collections::DynamicDeque, Buffer};
+use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
@@ -33,7 +33,7 @@ pub enum WhipOutput {
         to: SocketAddr,
         data: Buffer<'static>,
     },
-    Bus(BusControl<ChannelId, TrackMedia>),
+    Bus(BusChannelControl<ChannelId, TrackMedia>),
     Destroy,
 }
 
@@ -125,7 +125,7 @@ impl WhipTask {
                 Output::Event(e) => match e {
                     Str0mEvent::Connected => {
                         log::info!("WhipServerTask connected");
-                        return WhipOutput::Bus(BusControl::ChannelSubscribe(
+                        return WhipOutput::Bus(BusChannelControl::Subscribe(
                             ChannelId::PublishVideo(self.channel_id),
                         ))
                         .into();
@@ -141,7 +141,7 @@ impl WhipTask {
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
                             self.output.push_back_safe(WhipOutput::Bus(
-                                BusControl::ChannelUnsubscribe(ChannelId::PublishVideo(
+                                BusChannelControl::Unsubscribe(ChannelId::PublishVideo(
                                     self.channel_id,
                                 )),
                             ));
@@ -157,7 +157,7 @@ impl WhipTask {
                             ChannelId::ConsumeVideo(self.channel_id)
                         };
                         let media = TrackMedia::from_raw(rtp);
-                        return Some(WhipOutput::Bus(BusControl::ChannelPublish(
+                        return Some(WhipOutput::Bus(BusChannelControl::Publish(
                             channel, false, media,
                         )));
                     }
@@ -223,7 +223,7 @@ impl WhipTask {
     pub fn shutdown<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
         self.rtc.disconnect();
         self.output
-            .push_back_safe(WhipOutput::Bus(BusControl::ChannelUnsubscribe(
+            .push_back_safe(WhipOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::PublishVideo(self.channel_id),
             )));
         self.output.push_back_safe(WhipOutput::Destroy);

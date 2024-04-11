@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{bus::BusControl, collections::DynamicDeque, Buffer};
+use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
@@ -33,7 +33,7 @@ pub enum WhepOutput {
         to: SocketAddr,
         data: Buffer<'static>,
     },
-    Bus(BusControl<ChannelId, KeyframeRequestKind>),
+    Bus(BusChannelControl<ChannelId, KeyframeRequestKind>),
     Destroy,
 }
 
@@ -126,15 +126,15 @@ impl WhepTask {
                     Str0mEvent::Connected => {
                         log::info!("WhepServerTask connected");
                         self.output
-                            .push_back_safe(WhepOutput::Bus(BusControl::ChannelSubscribe(
+                            .push_back_safe(WhepOutput::Bus(BusChannelControl::Subscribe(
                                 ChannelId::ConsumeAudio(self.channel_id),
                             )));
                         self.output
-                            .push_back_safe(WhepOutput::Bus(BusControl::ChannelSubscribe(
+                            .push_back_safe(WhepOutput::Bus(BusChannelControl::Subscribe(
                                 ChannelId::ConsumeVideo(self.channel_id),
                             )));
                         self.output
-                            .push_back_safe(WhepOutput::Bus(BusControl::ChannelPublish(
+                            .push_back_safe(WhepOutput::Bus(BusChannelControl::Publish(
                                 ChannelId::PublishVideo(self.channel_id),
                                 true,
                                 KeyframeRequestKind::Pli,
@@ -152,12 +152,12 @@ impl WhepTask {
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
                             self.output.push_back_safe(WhepOutput::Bus(
-                                BusControl::ChannelUnsubscribe(ChannelId::ConsumeAudio(
+                                BusChannelControl::Unsubscribe(ChannelId::ConsumeAudio(
                                     self.channel_id,
                                 )),
                             ));
                             self.output.push_back_safe(WhepOutput::Bus(
-                                BusControl::ChannelUnsubscribe(ChannelId::ConsumeVideo(
+                                BusChannelControl::Unsubscribe(ChannelId::ConsumeVideo(
                                     self.channel_id,
                                 )),
                             ));
@@ -167,7 +167,7 @@ impl WhepTask {
                         _ => {}
                     },
                     Str0mEvent::KeyframeRequest(req) => {
-                        return Some(WhepOutput::Bus(BusControl::ChannelPublish(
+                        return Some(WhepOutput::Bus(BusChannelControl::Publish(
                             ChannelId::PublishVideo(self.channel_id),
                             false,
                             req.kind,
@@ -262,11 +262,11 @@ impl WhepTask {
     pub fn shutdown<'a>(&mut self, now: Instant) -> Option<WhepOutput> {
         self.rtc.disconnect();
         self.output
-            .push_back_safe(WhepOutput::Bus(BusControl::ChannelUnsubscribe(
+            .push_back_safe(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeAudio(self.channel_id),
             )));
         self.output
-            .push_back_safe(WhepOutput::Bus(BusControl::ChannelUnsubscribe(
+            .push_back_safe(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeVideo(self.channel_id),
             )));
         self.output.push_back_safe(WhepOutput::Destroy);

@@ -145,7 +145,7 @@ impl<'a> From<Vec<u8>> for BufferMutInner<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Buffer<'a> {
-    pub buf: BufferInner<'a>,
+    buf: BufferInner<'a>,
     pub range: std::ops::Range<usize>,
 }
 
@@ -245,6 +245,13 @@ pub struct BufferMut<'a> {
 }
 
 impl<'a> BufferMut<'a> {
+    pub fn owned(self) -> BufferMut<'static> {
+        BufferMut {
+            buf: self.buf.owned(),
+            range: self.range,
+        }
+    }
+
     /// Create a buffer mut with append some bytes at first and some bytes at end
     pub fn build(data: &[u8], more_left: usize, more_right: usize) -> BufferMut<'static> {
         let mut v = Vec::with_capacity(more_left + data.len() + more_right);
