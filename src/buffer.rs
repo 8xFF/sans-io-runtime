@@ -93,20 +93,15 @@ impl<'a> BufferMutInner<'a> {
         }
     }
 
-    pub fn ensure_back(&mut self, more: usize) {
+    pub fn allocate_more(&mut self, more: usize) {
         match self {
             Self::Ref(r) => {
-                let mut v = Vec::with_capacity(r.len() + more);
+                let mut v = vec![0; r.len() + more];
                 v[0..r.len()].copy_from_slice(r);
-                unsafe {
-                    v.set_len(r.len() + more);
-                }
+                *self = Self::Vec(v);
             }
             Self::Vec(v) => {
-                v.reserve_exact(more);
-                unsafe {
-                    v.set_len(v.capacity());
-                }
+                v.append(&mut vec![0; more]);
             }
         }
     }
@@ -254,10 +249,7 @@ impl<'a> BufferMut<'a> {
 
     /// Create a buffer mut with append some bytes at first and some bytes at end
     pub fn build(data: &[u8], more_left: usize, more_right: usize) -> BufferMut<'static> {
-        let mut v = Vec::with_capacity(more_left + data.len() + more_right);
-        unsafe {
-            v.set_len(v.capacity());
-        };
+        let mut v = vec![0; more_left + data.len() + more_right];
         v[more_left..more_left + data.len()].copy_from_slice(data);
         BufferMut {
             buf: v.into(),
@@ -302,7 +294,7 @@ impl<'a> BufferMut<'a> {
         assert!(self.buf.len() >= self.range.end);
         let remain = self.buf.len() - self.range.end;
         if remain < more {
-            self.buf.ensure_back(more - remain);
+            self.buf.allocate_more(more - remain);
         }
     }
 
@@ -396,9 +388,9 @@ impl<'a> DerefMut for BufferMut<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
+    use std::{ops::Deref, vec};
 
-    use super::{Buffer, BufferMut};
+    use super::{Buffer, BufferMut, BufferMutInner};
 
     #[test]
     fn simple_buffer_view() {
@@ -421,5 +413,17 @@ mod tests {
         assert_eq!(res.deref(), &[5, 6]);
         assert_eq!(res.to_vec(), &[5, 6]);
         assert_eq!(buf.pop_front(2).expect("").deref(), &[1, 2]);
+    }
+
+    #[test]
+    fn buffer_expend() {
+        let mut buf = BufferMutInner::Vec(vec![1, 2, 3, 4]);
+        buf.allocate_more(10);
+        assert_eq!(buf.len(), 14);
+
+        let mut raw = vec![1, 2, 3, 4];
+        let mut buf = BufferMutInner::Ref(&mut raw);
+        buf.allocate_more(10);
+        assert_eq!(buf.len(), 14);
     }
 }

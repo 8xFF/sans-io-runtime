@@ -7,8 +7,8 @@
 //! Example usage:
 //!
 //! ```rust
-//! use sans_io_runtime::backend::{Backend, BackendOwner, PollBackend, BackendIncoming};
-//! use sans_io_runtime::{Buffer, NetOutgoing};
+//! use sans_io_runtime::backend::{Backend, BackendOwner, PollBackend, BackendIncoming, BackendOutgoing};
+//! use sans_io_runtime::Buffer;
 //! use std::time::Duration;
 //! use std::net::SocketAddr;
 //!
@@ -16,7 +16,7 @@
 //! let mut backend = PollBackend::<(), 8, 64>::default();
 //!
 //! // Register an owner and bind a UDP socket
-//! BackendOutgoing::UdpListen { addr: SocketAddr::from(([127, 0, 0, 1], 0)), reuse: false });
+//! backend.on_action((), BackendOutgoing::UdpListen { addr: SocketAddr::from(([127, 0, 0, 1], 0)), reuse: false });
 //!
 //! let mut buf = [0; 1500];
 //!
@@ -29,7 +29,7 @@
 //! let slot = 0;
 //! let to = SocketAddr::from(([127, 0, 0, 1], 2000));
 //! let data = Buffer::from(b"hello".as_slice());
-//! BackendOutgoing::UdpPacket { slot, to, data });
+//! backend.on_action((), BackendOutgoing::UdpPacket { slot, to, data });
 //!
 //! // Unregister an owner and remove associated sockets
 //! backend.remove_owner(());
