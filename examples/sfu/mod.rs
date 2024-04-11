@@ -246,7 +246,7 @@ impl From<usize> for TaskType {
         match value {
             0 => Self::Whip,
             1 => Self::Whep,
-            _ => panic!("Should not happend"),
+            _ => panic!("Should not happen"),
         }
     }
 }
@@ -442,7 +442,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
                     )?;
                     Some(self.process_whep_out(now, owner.index(), out))
                 }
-                _ => panic!("should not hapend {:?}", owner),
+                _ => panic!("should not happen {:?}", owner),
             },
             _ => None,
         }
