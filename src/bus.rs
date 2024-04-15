@@ -9,40 +9,6 @@ pub use local_hub::*;
 
 use crate::backend::Awaker;
 
-#[derive(Debug)]
-pub enum BusEvent<ChannelIn, ChannelOut, MSG> {
-    ChannelSubscribe(ChannelIn),
-    ChannelUnsubscribe(ChannelIn),
-    /// The first parameter is the channel id, the second parameter is whether the message is safe, and the third parameter is the message.
-    ChannelPublish(ChannelOut, bool, MSG),
-}
-
-impl<ChannelIn, ChannelOut, MSG> BusEvent<ChannelIn, ChannelOut, MSG> {
-    pub fn high_priority(&self) -> bool {
-        match self {
-            Self::ChannelSubscribe(_) => true,
-            Self::ChannelUnsubscribe(_) => true,
-            Self::ChannelPublish(_, _, _) => false,
-        }
-    }
-
-    pub fn convert_into<
-        NChannelIn: From<ChannelIn>,
-        NChannelOut: From<ChannelOut>,
-        NMSG: From<MSG>,
-    >(
-        self,
-    ) -> BusEvent<NChannelIn, NChannelOut, NMSG> {
-        match self {
-            Self::ChannelSubscribe(channel) => BusEvent::ChannelSubscribe(channel.into()),
-            Self::ChannelUnsubscribe(channel) => BusEvent::ChannelUnsubscribe(channel.into()),
-            Self::ChannelPublish(channel, safe, msg) => {
-                BusEvent::ChannelPublish(channel.into(), safe, msg.into())
-            }
-        }
-    }
-}
-
 pub trait BusSendSingleFeature<MSG> {
     fn send_safe(&self, dest_leg: usize, msg: MSG) -> usize;
     fn send(&self, dest_leg: usize, safe: bool, msg: MSG) -> Result<usize, BusLegSenderErr>;
@@ -166,11 +132,11 @@ impl<ChannelId, MSG: Clone, const STACK_SIZE: usize> BusSendMultiFeature<MSG>
         match legs.len() {
             0 => log::warn!("No leg to broadcast"),
             1 => {
-                let _ = legs[0].send(BusEventSource::External, safe, msg);
+                let _ = legs[0].send(BusEventSource::Broadcast(self.leg_index), safe, msg);
             }
             _ => {
                 for leg in &*legs {
-                    let _ = leg.send(BusEventSource::External, safe, msg.clone());
+                    let _ = leg.send(BusEventSource::Broadcast(self.leg_index), safe, msg.clone());
                 }
             }
         }

@@ -1,18 +1,15 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{
-    bus::BusEvent, collections::DynamicDeque, Buffer, NetIncoming, NetOutgoing, Task, TaskInput,
-    TaskOutput,
-};
+use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
-    media::{MediaKind, Mid},
+    media::{KeyframeRequestKind, MediaKind, Mid},
     net::{Protocol, Receive},
     Candidate, Event as Str0mEvent, IceConnectionState, Input, Output, Rtc,
 };
 
-use super::{ChannelId, ExtIn, ExtOut, SfuEvent, TrackMedia};
+use super::{ChannelId, TrackMedia};
 
 pub struct WhipTaskBuildResult {
     pub task: WhipTask,
@@ -20,20 +17,38 @@ pub struct WhipTaskBuildResult {
     pub sdp: String,
 }
 
+pub enum WhipInput<'a> {
+    UdpPacket {
+        from: SocketAddr,
+        data: Buffer<'a>,
+    },
+    Bus {
+        channel: ChannelId,
+        kind: KeyframeRequestKind,
+    },
+}
+
+pub enum WhipOutput {
+    UdpPacket {
+        to: SocketAddr,
+        data: Buffer<'static>,
+    },
+    Bus(BusChannelControl<ChannelId, TrackMedia>),
+    Destroy,
+}
+
 pub struct WhipTask {
-    backend_slot: usize,
     backend_addr: SocketAddr,
     timeout: Option<Instant>,
     rtc: Rtc,
     audio_mid: Option<Mid>,
     video_mid: Option<Mid>,
     channel_id: u64,
-    output: DynamicDeque<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>, 8>,
+    output: DynamicDeque<WhipOutput, 8>,
 }
 
 impl WhipTask {
     pub fn build(
-        backend_slot: usize,
         backend_addr: SocketAddr,
         dtls_cert: DtlsCert,
         channel: u64,
@@ -64,7 +79,6 @@ impl WhipTask {
             .accept_offer(offer)
             .expect("Should accept offer");
         let instance = Self {
-            backend_slot,
             backend_addr,
             timeout: None,
             rtc,
@@ -81,11 +95,7 @@ impl WhipTask {
         })
     }
 
-    fn pop_event_inner(
-        &mut self,
-        now: Instant,
-        has_input: bool,
-    ) -> Option<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    fn pop_event_inner(&mut self, now: Instant, has_input: bool) -> Option<WhipOutput> {
         if let Some(o) = self.output.pop_front() {
             return Some(o);
         }
@@ -106,17 +116,16 @@ impl WhipTask {
                     break;
                 }
                 Output::Transmit(send) => {
-                    return TaskOutput::Net(NetOutgoing::UdpPacket {
-                        slot: self.backend_slot,
+                    return WhipOutput::UdpPacket {
                         to: send.destination,
-                        data: Buffer::Vec(send.contents.into()),
-                    })
+                        data: Buffer::from(send.contents.to_vec()),
+                    }
                     .into();
                 }
                 Output::Event(e) => match e {
                     Str0mEvent::Connected => {
                         log::info!("WhipServerTask connected");
-                        return TaskOutput::Bus(BusEvent::ChannelSubscribe(
+                        return WhipOutput::Bus(BusChannelControl::Subscribe(
                             ChannelId::PublishVideo(self.channel_id),
                         ))
                         .into();
@@ -131,12 +140,12 @@ impl WhipTask {
                     }
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
-                            self.output.push_back_safe(TaskOutput::Bus(
-                                BusEvent::ChannelUnsubscribe(ChannelId::PublishVideo(
+                            self.output.push_back_safe(WhipOutput::Bus(
+                                BusChannelControl::Unsubscribe(ChannelId::PublishVideo(
                                     self.channel_id,
                                 )),
                             ));
-                            self.output.push_back_safe(TaskOutput::Destroy);
+                            self.output.push_back_safe(WhipOutput::Destroy);
                             return self.output.pop_front();
                         }
                         _ => {}
@@ -148,10 +157,8 @@ impl WhipTask {
                             ChannelId::ConsumeVideo(self.channel_id)
                         };
                         let media = TrackMedia::from_raw(rtp);
-                        return Some(TaskOutput::Bus(BusEvent::ChannelPublish(
-                            channel,
-                            false,
-                            SfuEvent::Media(media).into(),
+                        return Some(WhipOutput::Bus(BusChannelControl::Publish(
+                            channel, false, media,
                         )));
                     }
                     _ => {}
@@ -163,15 +170,9 @@ impl WhipTask {
     }
 }
 
-impl Task<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask {
-    /// The type identifier for the task.
-    const TYPE: u16 = 0;
-
+impl WhipTask {
     /// Called on each tick of the task.
-    fn on_tick<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    pub fn on_tick<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
         let timeout = self.timeout?;
         if now < timeout {
             return None;
@@ -185,77 +186,47 @@ impl Task<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent> for WhipTask 
     }
 
     /// Called when an input event is received for the task.
-    fn on_event<'a>(
-        &mut self,
-        now: Instant,
-        input: TaskInput<'a, ExtIn, ChannelId, SfuEvent>,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    pub fn on_event<'a>(&mut self, now: Instant, input: WhipInput<'a>) -> Option<WhipOutput> {
         match input {
-            TaskInput::Net(event) => match event {
-                NetIncoming::UdpPacket {
-                    from,
-                    slot: _,
-                    data,
-                } => {
-                    if let Err(e) = self.rtc.handle_input(Input::Receive(
-                        now,
-                        Receive::new(Protocol::Udp, from, self.backend_addr, data)
-                            .expect("Should parse udp"),
-                    )) {
-                        log::error!("Error handling udp: {}", e);
-                    }
+            WhipInput::UdpPacket { from, data } => {
+                if let Err(e) = self.rtc.handle_input(Input::Receive(
+                    now,
+                    Receive::new(Protocol::Udp, from, self.backend_addr, &data)
+                        .expect("Should parse udp"),
+                )) {
+                    log::error!("Error handling udp: {}", e);
+                }
+                self.pop_event_inner(now, true)
+            }
+            WhipInput::Bus { channel: _, kind } => {
+                if let Some(mid) = self.video_mid {
+                    log::info!("Requesting keyframe for video mid: {:?}", mid);
+                    self.rtc
+                        .direct_api()
+                        .stream_rx_by_mid(mid, None)
+                        .expect("Should has video mid")
+                        .request_keyframe(kind);
                     self.pop_event_inner(now, true)
-                }
-                NetIncoming::UdpListenResult { .. } => {
-                    panic!("Unexpected UdpListenResult");
-                }
-                _ => None,
-            },
-            TaskInput::Bus(channel, event) => match event {
-                SfuEvent::RequestKeyFrame(kind) => {
-                    if let Some(mid) = self.video_mid {
-                        log::info!("Requesting keyframe for video mid: {:?}", mid);
-                        self.rtc
-                            .direct_api()
-                            .stream_rx_by_mid(mid, None)
-                            .expect("Should has video mid")
-                            .request_keyframe(kind);
-                        self.pop_event_inner(now, true)
-                    } else {
-                        log::error!("No video mid for requesting keyframe");
-                        None
-                    }
-                }
-                SfuEvent::Media(_media) => {
-                    log::warn!(
-                        "Media event should not be sent to WhipTask in {:?}",
-                        channel
-                    );
+                } else {
+                    log::error!("No video mid for requesting keyframe");
                     None
                 }
-            },
-            TaskInput::Ext(_) => None,
+            }
         }
     }
 
     /// Retrieves the next output event from the task.
-    fn pop_output<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    pub fn pop_output<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
         self.pop_event_inner(now, false)
     }
 
-    fn shutdown<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    pub fn shutdown<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
         self.rtc.disconnect();
         self.output
-            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(
+            .push_back_safe(WhipOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::PublishVideo(self.channel_id),
             )));
-        self.output.push_back_safe(TaskOutput::Destroy);
+        self.output.push_back_safe(WhipOutput::Destroy);
         self.pop_event_inner(now, true)
     }
 }
