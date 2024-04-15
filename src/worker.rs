@@ -99,6 +99,7 @@ impl WorkerStats {
     }
 }
 
+#[derive(Debug)]
 pub enum WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event> {
     Net(Owner, BackendIncoming<'a>),
     Bus(BusEvent<Owner, ChannelId, Event>),
