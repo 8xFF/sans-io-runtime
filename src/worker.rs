@@ -45,18 +45,18 @@ pub enum BusControl<Owner, ChannelId, MSG> {
 
 impl<Owner, ChannelId, MSG> BusControl<Owner, ChannelId, MSG> {
     pub fn high_priority(&self) -> bool {
-        match self {
-            Self::Channel(_, BusChannelControl::Subscribe(..)) => true,
-            Self::Channel(_, BusChannelControl::Unsubscribe(..)) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Self::Channel(_, BusChannelControl::Subscribe(..))
+                | Self::Channel(_, BusChannelControl::Unsubscribe(..))
+        )
     }
 
     pub fn convert_into<NOwner: From<Owner>, NChannelId: From<ChannelId>, NMSG: From<MSG>>(
         self,
     ) -> BusControl<Owner, NChannelId, NMSG> {
         match self {
-            Self::Channel(owner, event) => BusControl::Channel(owner.into(), event.convert_into()),
+            Self::Channel(owner, event) => BusControl::Channel(owner, event.convert_into()),
             Self::Broadcast(safe, msg) => BusControl::Broadcast(safe, msg.into()),
         }
     }

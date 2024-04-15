@@ -7,7 +7,7 @@ enum BufferInner<'a> {
 }
 
 impl<'a> BufferInner<'a> {
-    pub fn view<'b>(&'b self) -> BufferInner<'b> {
+    pub fn view(&self) -> BufferInner {
         match self {
             Self::Ref(r) => BufferInner::Ref(r),
             Self::Vec(v) => BufferInner::Ref(v),
@@ -86,7 +86,7 @@ impl<'a> BufferMutInner<'a> {
         }
     }
 
-    pub fn view<'b>(&'b self) -> BufferInner<'b> {
+    pub fn view(&self) -> BufferInner {
         match self {
             Self::Ref(r) => BufferInner::Ref(r),
             Self::Vec(v) => BufferInner::Ref(v),
@@ -166,7 +166,7 @@ impl<'a> Buffer<'a> {
         }
     }
 
-    pub fn view<'b>(&'b self, range: std::ops::Range<usize>) -> Option<Buffer<'b>> {
+    pub fn view(&self, range: std::ops::Range<usize>) -> Option<Buffer> {
         if self.range.end - self.range.start >= range.end {
             Some(Buffer {
                 buf: self.buf.view(),
@@ -177,7 +177,7 @@ impl<'a> Buffer<'a> {
         }
     }
 
-    pub fn pop_back<'b>(&'b mut self, len: usize) -> Option<Buffer<'b>> {
+    pub fn pop_back(&mut self, len: usize) -> Option<Buffer> {
         if self.range.end - self.range.start >= len {
             self.range.end -= len;
             Some(Buffer {
@@ -189,7 +189,7 @@ impl<'a> Buffer<'a> {
         }
     }
 
-    pub fn pop_front<'b>(&'b mut self, len: usize) -> Option<Buffer<'b>> {
+    pub fn pop_front(&mut self, len: usize) -> Option<Buffer> {
         if self.range.end - self.range.start >= len {
             self.range.start += len;
             Some(Buffer {
@@ -372,7 +372,7 @@ impl From<Vec<u8>> for BufferMut<'_> {
     }
 }
 
-impl<'a> Deref for BufferMut<'_> {
+impl Deref for BufferMut<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -380,7 +380,7 @@ impl<'a> Deref for BufferMut<'_> {
     }
 }
 
-impl<'a> DerefMut for BufferMut<'_> {
+impl DerefMut for BufferMut<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.buf.deref_mut()[self.range.start..self.range.end]
     }

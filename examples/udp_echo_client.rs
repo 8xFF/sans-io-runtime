@@ -101,7 +101,6 @@ impl EchoTask {
                     }))
                 }
             }
-            _ => unreachable!("EchoTask only has NetIncoming variants"),
         }
     }
 
