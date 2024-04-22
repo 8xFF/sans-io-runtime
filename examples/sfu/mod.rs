@@ -235,20 +235,11 @@ impl SfuWorker {
     }
 }
 
-#[repr(u8)]
+#[derive(num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
+#[repr(usize)]
 enum TaskType {
     Whip = 0,
     Whep = 1,
-}
-
-impl From<usize> for TaskType {
-    fn from(value: usize) -> Self {
-        match value {
-            0 => Self::Whip,
-            1 => Self::Whep,
-            _ => panic!("Should not happen"),
-        }
-    }
 }
 
 impl SfuWorker {
@@ -358,7 +349,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
 
         let switcher = &mut self.switcher;
         loop {
-            match switcher.looper_current(now)?.into() {
+            match switcher.looper_current(now)?.try_into().ok()? {
                 TaskType::Whip => {
                     if let Some((index, out)) =
                         switcher.looper_process(self.whip_group.on_tick(now))

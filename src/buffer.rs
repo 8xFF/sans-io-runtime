@@ -105,6 +105,16 @@ impl<'a> BufferMutInner<'a> {
             }
         }
     }
+
+    pub fn slice_mut<'b>(&'a mut self) -> &'b mut [u8]
+    where
+        'a: 'b,
+    {
+        match self {
+            Self::Ref(r) => r,
+            Self::Vec(v) => v,
+        }
+    }
 }
 
 impl<'a> Deref for BufferMutInner<'a> {
@@ -351,6 +361,13 @@ impl<'a> BufferMut<'a> {
         }
         self.range.start -= len;
         Some(())
+    }
+
+    pub fn slice_mut<'b>(&'a mut self) -> &'b mut [u8]
+    where
+        'a: 'b,
+    {
+        self.buf.slice_mut()
     }
 }
 

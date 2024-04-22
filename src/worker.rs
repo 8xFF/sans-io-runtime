@@ -113,6 +113,7 @@ pub enum WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg> {
     Ext(bool, ExtOut),
     Spawn(SCfg),
     Destroy(Owner),
+    Continue,
 }
 
 pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
@@ -471,6 +472,7 @@ impl<
                     log::error!("Failed to send external: {:?}", e);
                 }
             }
+            WorkerInnerOutput::Continue => {}
         }
     }
 }
