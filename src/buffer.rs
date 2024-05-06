@@ -224,6 +224,14 @@ impl<'a> Deref for Buffer<'a> {
     }
 }
 
+impl<'a> Eq for Buffer<'a> {}
+
+impl<'a> PartialEq for Buffer<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
 impl<'a> From<&'a [u8]> for Buffer<'a> {
     fn from(value: &'a [u8]) -> Self {
         Buffer {
@@ -394,6 +402,12 @@ impl Deref for BufferMut<'_> {
 
     fn deref(&self) -> &Self::Target {
         &self.buf.deref()[self.range.start..self.range.end]
+    }
+}
+
+impl<'a> PartialEq for BufferMut<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
     }
 }
 

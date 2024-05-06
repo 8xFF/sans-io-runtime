@@ -69,7 +69,7 @@ pub enum BackendIncomingRaw<Owner> {
 }
 
 /// Represents an outgoing network control.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BackendOutgoing<'a> {
     #[cfg(feature = "udp")]
     UdpListen { addr: SocketAddr, reuse: bool },
