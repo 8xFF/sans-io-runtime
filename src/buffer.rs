@@ -1,185 +1,80 @@
 use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone)]
-enum BufferInner<'a> {
+enum BufferViewInner<'a> {
     Ref(&'a [u8]),
-    Vec(Vec<u8>),
 }
 
-impl<'a> BufferInner<'a> {
-    pub fn view(&self) -> BufferInner {
-        match self {
-            Self::Ref(r) => BufferInner::Ref(r),
-            Self::Vec(v) => BufferInner::Ref(v),
-        }
-    }
-
-    pub fn owned(self) -> BufferInner<'static> {
-        match self {
-            Self::Ref(r) => BufferInner::Vec(r.to_vec()),
-            Self::Vec(v) => BufferInner::Vec(v),
-        }
-    }
-
-    pub fn owned_mut(self) -> BufferMutInner<'static> {
-        match self {
-            Self::Ref(r) => BufferMutInner::Vec(r.to_vec()),
-            Self::Vec(v) => BufferMutInner::Vec(v),
-        }
-    }
-
-    pub fn clone_mut(&self) -> BufferMutInner<'static> {
-        match self {
-            Self::Ref(r) => BufferMutInner::Vec(r.to_vec()),
-            Self::Vec(v) => BufferMutInner::Vec(v.to_vec()),
-        }
-    }
-}
-
-impl<'a> Deref for BufferInner<'a> {
+impl<'a> Deref for BufferViewInner<'a> {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Ref(r) => r,
-            Self::Vec(v) => v,
         }
     }
 }
 
-impl<'a> From<&'a [u8]> for BufferInner<'a> {
+impl<'a> From<&'a [u8]> for BufferViewInner<'a> {
     fn from(value: &'a [u8]) -> Self {
         Self::Ref(value)
     }
 }
 
-impl<'a> From<Vec<u8>> for BufferInner<'a> {
-    fn from(value: Vec<u8>) -> Self {
-        Self::Vec(value)
-    }
-}
-
-#[derive(Debug)]
-enum BufferMutInner<'a> {
-    Ref(&'a mut [u8]),
+#[derive(Debug, Clone)]
+enum BufferInner {
     Vec(Vec<u8>),
 }
 
-impl<'a> BufferMutInner<'a> {
-    pub fn owned(self) -> BufferMutInner<'static> {
+impl BufferInner {
+    pub fn view(&self) -> BufferViewInner {
         match self {
-            Self::Ref(r) => BufferMutInner::Vec(r.to_vec()),
-            Self::Vec(v) => BufferMutInner::Vec(v),
-        }
-    }
-
-    pub fn freeze(self) -> BufferInner<'a> {
-        match self {
-            Self::Ref(r) => BufferInner::Ref(r),
-            Self::Vec(v) => BufferInner::Vec(v),
-        }
-    }
-
-    pub fn copy_readonly(&self) -> BufferInner<'static> {
-        match self {
-            Self::Ref(r) => BufferInner::Vec(r.to_vec()),
-            Self::Vec(v) => BufferInner::Vec(v.clone()),
-        }
-    }
-
-    pub fn view(&self) -> BufferInner {
-        match self {
-            Self::Ref(r) => BufferInner::Ref(r),
-            Self::Vec(v) => BufferInner::Ref(v),
+            Self::Vec(v) => v.as_slice().into(),
         }
     }
 
     pub fn allocate_more(&mut self, more: usize) {
         match self {
-            Self::Ref(r) => {
-                let mut v = vec![0; r.len() + more];
-                v[0..r.len()].copy_from_slice(r);
-                *self = Self::Vec(v);
-            }
             Self::Vec(v) => {
                 v.append(&mut vec![0; more]);
             }
         }
     }
-
-    pub fn slice_mut<'b>(&'a mut self) -> &'b mut [u8]
-    where
-        'a: 'b,
-    {
-        match self {
-            Self::Ref(r) => r,
-            Self::Vec(v) => v,
-        }
-    }
 }
 
-impl<'a> Deref for BufferMutInner<'a> {
+impl Deref for BufferInner {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::Ref(r) => r,
             Self::Vec(v) => v,
         }
     }
 }
 
-impl<'a> DerefMut for BufferMutInner<'a> {
+impl DerefMut for BufferInner {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
-            Self::Ref(r) => r,
             Self::Vec(v) => v,
         }
     }
 }
 
-impl<'a> From<&'a mut [u8]> for BufferMutInner<'a> {
-    fn from(value: &'a mut [u8]) -> Self {
-        Self::Ref(value)
-    }
-}
-
-impl<'a> From<Vec<u8>> for BufferMutInner<'a> {
+impl From<Vec<u8>> for BufferInner {
     fn from(value: Vec<u8>) -> Self {
         Self::Vec(value)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Buffer<'a> {
-    buf: BufferInner<'a>,
+pub struct BufferView<'a> {
+    buf: BufferViewInner<'a>,
     pub range: std::ops::Range<usize>,
 }
 
-impl<'a> Buffer<'a> {
-    pub fn owned(self) -> Buffer<'static> {
-        Buffer {
-            buf: self.buf.owned(),
-            range: self.range,
-        }
-    }
-
-    pub fn owned_mut(self) -> BufferMut<'static> {
-        BufferMut {
-            buf: self.buf.owned_mut(),
-            range: self.range,
-        }
-    }
-
-    pub fn clone_mut(&self) -> BufferMut<'static> {
-        BufferMut {
-            buf: self.buf.clone_mut(),
-            range: self.range.clone(),
-        }
-    }
-
-    pub fn view(&self, range: std::ops::Range<usize>) -> Option<Buffer> {
+impl<'a> BufferView<'a> {
+    pub fn view(&self, range: std::ops::Range<usize>) -> Option<BufferView> {
         if self.range.end - self.range.start >= range.end {
-            Some(Buffer {
-                buf: self.buf.view(),
+            Some(BufferView {
+                buf: self.buf.clone(),
                 range: (self.range.start + range.start..self.range.start + range.end),
             })
         } else {
@@ -187,11 +82,11 @@ impl<'a> Buffer<'a> {
         }
     }
 
-    pub fn pop_back(&mut self, len: usize) -> Option<Buffer> {
+    pub fn pop_back(&mut self, len: usize) -> Option<BufferView> {
         if self.range.end - self.range.start >= len {
             self.range.end -= len;
-            Some(Buffer {
-                buf: self.buf.view(),
+            Some(BufferView {
+                buf: self.buf.clone(),
                 range: (self.range.end..self.range.end + len),
             })
         } else {
@@ -199,11 +94,11 @@ impl<'a> Buffer<'a> {
         }
     }
 
-    pub fn pop_front(&mut self, len: usize) -> Option<Buffer> {
+    pub fn pop_front(&mut self, len: usize) -> Option<BufferView> {
         if self.range.end - self.range.start >= len {
             self.range.start += len;
-            Some(Buffer {
-                buf: self.buf.view(),
+            Some(BufferView {
+                buf: self.buf.clone(),
                 range: (self.range.start - len..self.range.start),
             })
         } else {
@@ -216,7 +111,7 @@ impl<'a> Buffer<'a> {
     }
 }
 
-impl<'a> Deref for Buffer<'a> {
+impl<'a> Deref for BufferView<'a> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -224,87 +119,66 @@ impl<'a> Deref for Buffer<'a> {
     }
 }
 
-impl<'a> Eq for Buffer<'a> {}
+impl<'a> Eq for BufferView<'a> {}
 
-impl<'a> PartialEq for Buffer<'a> {
+impl<'a> PartialEq for BufferView<'a> {
     fn eq(&self, other: &Self) -> bool {
         self.deref() == other.deref()
     }
 }
 
-impl<'a> From<&'a [u8]> for Buffer<'a> {
+impl<'a> From<&'a [u8]> for BufferView<'a> {
     fn from(value: &'a [u8]) -> Self {
-        Buffer {
+        BufferView {
             buf: value.into(),
             range: (0..value.len()),
         }
     }
 }
 
-impl From<Vec<u8>> for Buffer<'_> {
-    fn from(value: Vec<u8>) -> Self {
-        let len = value.len();
-        Buffer {
-            buf: value.into(),
-            range: (0..len),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct BufferMut<'a> {
-    buf: BufferMutInner<'a>,
+#[derive(Debug, Clone)]
+pub struct Buffer {
+    buf: BufferInner,
     range: std::ops::Range<usize>,
 }
 
-impl<'a> BufferMut<'a> {
-    pub fn owned(self) -> BufferMut<'static> {
-        BufferMut {
-            buf: self.buf.owned(),
-            range: self.range,
+impl Buffer {
+    /// Create a buffer with pre-defined size. The left path is useful when we
+    /// working with networking protocol. Sometime we need to append data to front of buffer
+    /// the left-padding with avoiding vector need to re-create
+    pub fn new(left: usize, main: usize) -> Buffer {
+        let mut v = Vec::with_capacity(left + main);
+        unsafe {
+            v.set_len(left + main);
+        }
+        Buffer {
+            buf: v.into(),
+            range: (left..left),
         }
     }
 
     /// Create a buffer mut with append some bytes at first and some bytes at end
-    pub fn build(data: &[u8], more_left: usize, more_right: usize) -> BufferMut<'static> {
+    pub fn build(data: &[u8], more_left: usize, more_right: usize) -> Buffer {
         let mut v = vec![0; more_left + data.len() + more_right];
         v[more_left..more_left + data.len()].copy_from_slice(data);
-        BufferMut {
+        Buffer {
             buf: v.into(),
             range: (more_left..more_left + data.len()),
         }
     }
 
-    /// Create a new buffer from a slice, we can manually set the start and end of the buffer.
-    pub fn from_slice_raw(data: &'a mut [u8], range: std::ops::Range<usize>) -> BufferMut<'a> {
-        assert!(range.end <= data.len());
-        BufferMut {
-            buf: data.into(),
-            range,
-        }
-    }
-
     /// Create a new buffer from a vec, we can manually set the start and end of the buffer.
-    pub fn from_vec_raw(data: Vec<u8>, range: std::ops::Range<usize>) -> BufferMut<'a> {
+    pub fn from_vec_raw(data: Vec<u8>, range: std::ops::Range<usize>) -> Buffer {
         assert!(range.end <= data.len());
-        BufferMut {
+        Buffer {
             buf: data.into(),
             range,
         }
     }
 
-    pub fn freeze(self) -> Buffer<'a> {
-        Buffer {
-            buf: self.buf.freeze(),
-            range: self.range,
-        }
-    }
-
-    pub fn copy_readonly(&self) -> Buffer<'static> {
-        Buffer {
-            buf: self.buf.copy_readonly(),
-            range: self.range.clone(),
-        }
+    /// Getting remain buffer for writing, this useful when using with UDP Socket
+    pub fn remain_mut(&mut self) -> &mut [u8] {
+        &mut self.buf.deref_mut()[self.range.start..]
     }
 
     /// Reverse the buffer for at least `len` bytes at back.
@@ -331,10 +205,10 @@ impl<'a> BufferMut<'a> {
         self.range.end += data.len();
     }
 
-    pub fn pop_back(&mut self, len: usize) -> Option<Buffer<'_>> {
+    pub fn pop_back(&mut self, len: usize) -> Option<BufferView<'_>> {
         if self.range.end - self.range.start >= len {
             self.range.end -= len;
-            Some(Buffer {
+            Some(BufferView {
                 buf: self.buf.view(),
                 range: (self.range.end..self.range.end + len),
             })
@@ -343,10 +217,10 @@ impl<'a> BufferMut<'a> {
         }
     }
 
-    pub fn pop_front(&mut self, len: usize) -> Option<Buffer<'_>> {
+    pub fn pop_front(&mut self, len: usize) -> Option<BufferView<'_>> {
         if self.range.end - self.range.start >= len {
             self.range.start += len;
-            Some(Buffer {
+            Some(BufferView {
                 buf: self.buf.view(),
                 range: (self.range.start - len..self.range.start),
             })
@@ -371,33 +245,33 @@ impl<'a> BufferMut<'a> {
         Some(())
     }
 
-    pub fn slice_mut<'b>(&'a mut self) -> &'b mut [u8]
-    where
-        'a: 'b,
-    {
-        self.buf.slice_mut()
-    }
-}
-
-impl<'a> From<&'a mut [u8]> for BufferMut<'a> {
-    fn from(value: &'a mut [u8]) -> Self {
-        BufferMut {
-            range: (0..value.len()),
-            buf: value.into(),
+    pub fn move_back_right(&mut self, len: usize) -> Option<()> {
+        if self.range.end + len > self.buf.len() {
+            return None;
         }
+        self.range.end += len;
+        Some(())
+    }
+
+    pub fn move_back_left(&mut self, len: usize) -> Option<()> {
+        if self.range.end < len || self.range.end - len < self.range.start {
+            return None;
+        }
+        self.range.end -= len;
+        Some(())
     }
 }
 
-impl From<Vec<u8>> for BufferMut<'_> {
+impl From<Vec<u8>> for Buffer {
     fn from(value: Vec<u8>) -> Self {
-        BufferMut {
+        Buffer {
             range: (0..value.len()),
             buf: value.into(),
         }
     }
 }
 
-impl Deref for BufferMut<'_> {
+impl Deref for Buffer {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -405,13 +279,15 @@ impl Deref for BufferMut<'_> {
     }
 }
 
-impl<'a> PartialEq for BufferMut<'a> {
+impl Eq for Buffer {}
+
+impl PartialEq for Buffer {
     fn eq(&self, other: &Self) -> bool {
         self.deref() == other.deref()
     }
 }
 
-impl DerefMut for BufferMut<'_> {
+impl DerefMut for Buffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.buf.deref_mut()[self.range.start..self.range.end]
     }
@@ -421,12 +297,12 @@ impl DerefMut for BufferMut<'_> {
 mod tests {
     use std::{ops::Deref, vec};
 
-    use super::{Buffer, BufferMut, BufferMutInner};
+    use super::{Buffer, BufferInner, BufferView};
 
     #[test]
     fn simple_buffer_view() {
         let data = vec![1, 2, 3, 4, 5, 6];
-        let mut buf: Buffer = (data.as_slice()).into();
+        let mut buf: BufferView = (data.as_slice()).into();
         assert_eq!(buf.len(), 6);
         assert_eq!(buf.pop_back(2).expect("").deref(), &[5, 6]);
         assert_eq!(buf.pop_front(2).expect("").deref(), &[1, 2]);
@@ -435,7 +311,7 @@ mod tests {
 
     #[test]
     fn simple_buffer_mut() {
-        let mut buf = BufferMut::build(&[1, 2, 3, 4, 5, 6], 4, 4);
+        let mut buf = Buffer::build(&[1, 2, 3, 4, 5, 6], 4, 4);
         assert_eq!(buf.deref(), &[1, 2, 3, 4, 5, 6]);
         assert_eq!(buf.to_vec(), vec![1, 2, 3, 4, 5, 6]);
         println!("{:?}", buf);
@@ -448,12 +324,11 @@ mod tests {
 
     #[test]
     fn buffer_expend() {
-        let mut buf = BufferMutInner::Vec(vec![1, 2, 3, 4]);
+        let mut buf = BufferInner::Vec(vec![1, 2, 3, 4]);
         buf.allocate_more(10);
         assert_eq!(buf.len(), 14);
 
-        let mut raw = vec![1, 2, 3, 4];
-        let mut buf = BufferMutInner::Ref(&mut raw);
+        let mut buf = BufferInner::from(vec![1, 2, 3, 4]);
         buf.allocate_more(10);
         assert_eq!(buf.len(), 14);
     }

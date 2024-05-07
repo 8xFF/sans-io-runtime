@@ -8,12 +8,12 @@ use std::collections::VecDeque;
 /// ```
 /// use sans_io_runtime::collections::DynamicDeque;
 /// let mut deque: DynamicDeque<i32, 5> = DynamicDeque::default();
-/// deque.push_back(true, 1).unwrap();
-/// deque.push_back(true, 2).unwrap();
-/// deque.push_back(true, 3).unwrap();
-/// deque.push_back(true, 4).unwrap();
-/// deque.push_back(true, 5).unwrap();
-/// deque.push_back(true, 6).unwrap(); // Should overflow to heap
+/// deque.push_back_stack(1).unwrap();
+/// deque.push_back_stack(2).unwrap();
+/// deque.push_back_stack(3).unwrap();
+/// deque.push_back_stack(4).unwrap();
+/// deque.push_back_stack(5).unwrap();
+/// deque.push_back(6); // Should overflow to heap
 /// assert_eq!(deque.len(), 6);
 /// ```
 pub struct DynamicDeque<T, const STACK_SIZE: usize> {
@@ -44,29 +44,9 @@ impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
     pub fn from<const SIZE: usize>(prepare: [T; SIZE]) -> Self {
         let mut instance = Self::default();
         for item in prepare {
-            instance.push_back_safe(item);
+            instance.push_back(item);
         }
         instance
-    }
-
-    /// Pushes an element to the back of the deque.
-    ///
-    /// # Arguments
-    ///
-    /// * `safe` - A boolean indicating whether this message should be fallback to heap if stack full.
-    /// * `value` - The value to be pushed.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - If the element was successfully pushed.
-    /// * `Err(value)` - If the element could not be pushed due to overflow.
-    pub fn push_back(&mut self, safe: bool, value: T) -> Result<(), T> {
-        if safe {
-            self.push_back_safe(value);
-            Ok(())
-        } else {
-            self.push_back_stack(value)
-        }
     }
 
     /// Pushes an element to the stack of the deque.
@@ -88,7 +68,7 @@ impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
     /// # Arguments
     ///
     /// * `value` - The value to be pushed.
-    pub fn push_back_safe(&mut self, value: T) {
+    pub fn push_back(&mut self, value: T) {
         if let Err(value) = self.stack.push_back(value) {
             self.heap.push_back(value);
         }
@@ -127,6 +107,19 @@ impl<T, const STATIC_SIZE: usize> DynamicDeque<T, STATIC_SIZE> {
     pub fn len(&self) -> usize {
         self.stack.len() + self.heap.len()
     }
+
+    /// This is useful in task where we usually doing output in queue
+    /// We need push to back then immediate pop from front
+    #[inline(always)]
+    pub fn pop2(&mut self, e: T) -> T {
+        if self.is_empty() {
+            e
+        } else {
+            let out = self.pop_front().expect("Should have because just push");
+            self.push_back(e);
+            out
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,19 +129,20 @@ mod tests {
     #[test]
     fn test_push_back() {
         let mut deque: DynamicDeque<i32, 2> = DynamicDeque::default();
-        assert!(deque.push_back(false, 1).is_ok());
-        assert!(deque.push_back(false, 2).is_ok());
-        assert!(deque.push_back(false, 3).is_err());
-        assert!(deque.push_back(true, 3).is_ok());
+        assert!(deque.push_back_stack(1).is_ok());
+        assert!(deque.push_back_stack(2).is_ok());
+        assert!(deque.push_back_stack(3).is_err());
+        assert_eq!(deque.len(), 2);
+        deque.push_back(3);
         assert_eq!(deque.len(), 3);
     }
 
     #[test]
     fn test_pop_front() {
         let mut deque: DynamicDeque<i32, 2> = DynamicDeque::default();
-        deque.push_back(true, 1).unwrap();
-        deque.push_back(true, 2).unwrap();
-        deque.push_back(true, 3).unwrap();
+        deque.push_back(1);
+        deque.push_back(2);
+        deque.push_back(3);
         assert_eq!(deque.pop_front(), Some(1));
         assert_eq!(deque.pop_front(), Some(2));
         assert_eq!(deque.pop_front(), Some(3));
@@ -160,7 +154,7 @@ mod tests {
     fn test_is_empty() {
         let mut deque: DynamicDeque<i32, 2> = DynamicDeque::default();
         assert_eq!(deque.is_empty(), true);
-        deque.push_back(true, 1).unwrap();
+        deque.push_back(1);
         assert_eq!(deque.is_empty(), false);
         deque.pop_front();
         assert_eq!(deque.is_empty(), true);

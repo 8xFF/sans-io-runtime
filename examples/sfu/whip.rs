@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl};
+use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl, Task};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
@@ -17,10 +17,10 @@ pub struct WhipTaskBuildResult {
     pub sdp: String,
 }
 
-pub enum WhipInput<'a> {
+pub enum WhipInput {
     UdpPacket {
         from: SocketAddr,
-        data: Buffer<'a>,
+        data: Buffer,
     },
     Bus {
         channel: ChannelId,
@@ -29,10 +29,7 @@ pub enum WhipInput<'a> {
 }
 
 pub enum WhipOutput {
-    UdpPacket {
-        to: SocketAddr,
-        data: Buffer<'static>,
-    },
+    UdpPacket { to: SocketAddr, data: Buffer },
     Bus(BusChannelControl<ChannelId, TrackMedia>),
     Destroy,
 }
@@ -140,12 +137,11 @@ impl WhipTask {
                     }
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
-                            self.output.push_back_safe(WhipOutput::Bus(
-                                BusChannelControl::Unsubscribe(ChannelId::PublishVideo(
-                                    self.channel_id,
-                                )),
-                            ));
-                            self.output.push_back_safe(WhipOutput::Destroy);
+                            self.output
+                                .push_back(WhipOutput::Bus(BusChannelControl::Unsubscribe(
+                                    ChannelId::PublishVideo(self.channel_id),
+                                )));
+                            self.output.push_back(WhipOutput::Destroy);
                             return self.output.pop_front();
                         }
                         _ => {}
@@ -170,9 +166,9 @@ impl WhipTask {
     }
 }
 
-impl WhipTask {
+impl Task<WhipInput, WhipOutput> for WhipTask {
     /// Called on each tick of the task.
-    pub fn on_tick<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
+    fn on_tick(&mut self, now: Instant) -> Option<WhipOutput> {
         let timeout = self.timeout?;
         if now < timeout {
             return None;
@@ -186,7 +182,7 @@ impl WhipTask {
     }
 
     /// Called when an input event is received for the task.
-    pub fn on_event<'a>(&mut self, now: Instant, input: WhipInput<'a>) -> Option<WhipOutput> {
+    fn on_event(&mut self, now: Instant, input: WhipInput) -> Option<WhipOutput> {
         match input {
             WhipInput::UdpPacket { from, data } => {
                 if let Err(e) = self.rtc.handle_input(Input::Receive(
@@ -216,17 +212,17 @@ impl WhipTask {
     }
 
     /// Retrieves the next output event from the task.
-    pub fn pop_output<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
+    fn pop_output(&mut self, now: Instant) -> Option<WhipOutput> {
         self.pop_event_inner(now, false)
     }
 
-    pub fn shutdown<'a>(&mut self, now: Instant) -> Option<WhipOutput> {
+    fn shutdown(&mut self, now: Instant) -> Option<WhipOutput> {
         self.rtc.disconnect();
         self.output
-            .push_back_safe(WhipOutput::Bus(BusChannelControl::Unsubscribe(
+            .push_back(WhipOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::PublishVideo(self.channel_id),
             )));
-        self.output.push_back_safe(WhipOutput::Destroy);
+        self.output.push_back(WhipOutput::Destroy);
         self.pop_event_inner(now, true)
     }
 }

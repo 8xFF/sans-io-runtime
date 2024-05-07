@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl};
+use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl, Task};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
@@ -17,10 +17,10 @@ pub struct WhepTaskBuildResult {
     pub sdp: String,
 }
 
-pub enum WhepInput<'a> {
+pub enum WhepInput {
     UdpPacket {
         from: SocketAddr,
-        data: Buffer<'a>,
+        data: Buffer,
     },
     Bus {
         channel: ChannelId,
@@ -29,10 +29,7 @@ pub enum WhepInput<'a> {
 }
 
 pub enum WhepOutput {
-    UdpPacket {
-        to: SocketAddr,
-        data: Buffer<'static>,
-    },
+    UdpPacket { to: SocketAddr, data: Buffer },
     Bus(BusChannelControl<ChannelId, KeyframeRequestKind>),
     Destroy,
 }
@@ -126,15 +123,15 @@ impl WhepTask {
                     Str0mEvent::Connected => {
                         log::info!("WhepServerTask connected");
                         self.output
-                            .push_back_safe(WhepOutput::Bus(BusChannelControl::Subscribe(
+                            .push_back(WhepOutput::Bus(BusChannelControl::Subscribe(
                                 ChannelId::ConsumeAudio(self.channel_id),
                             )));
                         self.output
-                            .push_back_safe(WhepOutput::Bus(BusChannelControl::Subscribe(
+                            .push_back(WhepOutput::Bus(BusChannelControl::Subscribe(
                                 ChannelId::ConsumeVideo(self.channel_id),
                             )));
                         self.output
-                            .push_back_safe(WhepOutput::Bus(BusChannelControl::Publish(
+                            .push_back(WhepOutput::Bus(BusChannelControl::Publish(
                                 ChannelId::PublishVideo(self.channel_id),
                                 true,
                                 KeyframeRequestKind::Pli,
@@ -151,17 +148,15 @@ impl WhepTask {
                     }
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
-                            self.output.push_back_safe(WhepOutput::Bus(
-                                BusChannelControl::Unsubscribe(ChannelId::ConsumeAudio(
-                                    self.channel_id,
-                                )),
-                            ));
-                            self.output.push_back_safe(WhepOutput::Bus(
-                                BusChannelControl::Unsubscribe(ChannelId::ConsumeVideo(
-                                    self.channel_id,
-                                )),
-                            ));
-                            self.output.push_back_safe(WhepOutput::Destroy);
+                            self.output
+                                .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
+                                    ChannelId::ConsumeAudio(self.channel_id),
+                                )));
+                            self.output
+                                .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
+                                    ChannelId::ConsumeVideo(self.channel_id),
+                                )));
+                            self.output.push_back(WhepOutput::Destroy);
                             return self.output.pop_front();
                         }
                         _ => {}
@@ -182,9 +177,9 @@ impl WhepTask {
     }
 }
 
-impl WhepTask {
+impl Task<WhepInput, WhepOutput> for WhepTask {
     /// Called on each tick of the task.
-    pub fn on_tick<'a>(&mut self, now: Instant) -> Option<WhepOutput> {
+    fn on_tick(&mut self, now: Instant) -> Option<WhepOutput> {
         let timeout = self.timeout?;
         if now < timeout {
             return None;
@@ -199,7 +194,7 @@ impl WhepTask {
     }
 
     /// Called when an input event is received for the task.
-    pub fn on_event<'a>(&mut self, now: Instant, input: WhepInput<'a>) -> Option<WhepOutput> {
+    fn on_event(&mut self, now: Instant, input: WhepInput) -> Option<WhepOutput> {
         match input {
             WhepInput::UdpPacket { from, data } => {
                 if let Err(e) = self.rtc.handle_input(Input::Receive(
@@ -255,21 +250,21 @@ impl WhepTask {
     }
 
     /// Retrieves the next output event from the task.
-    pub fn pop_output<'a>(&mut self, now: Instant) -> Option<WhepOutput> {
+    fn pop_output(&mut self, now: Instant) -> Option<WhepOutput> {
         self.pop_event_inner(now, false)
     }
 
-    pub fn shutdown<'a>(&mut self, now: Instant) -> Option<WhepOutput> {
+    fn shutdown(&mut self, now: Instant) -> Option<WhepOutput> {
         self.rtc.disconnect();
         self.output
-            .push_back_safe(WhepOutput::Bus(BusChannelControl::Unsubscribe(
+            .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeAudio(self.channel_id),
             )));
         self.output
-            .push_back_safe(WhepOutput::Bus(BusChannelControl::Unsubscribe(
+            .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeVideo(self.channel_id),
             )));
-        self.output.push_back_safe(WhepOutput::Destroy);
+        self.output.push_back(WhepOutput::Destroy);
         self.pop_event_inner(now, true)
     }
 }

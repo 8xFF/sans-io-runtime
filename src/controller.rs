@@ -137,7 +137,7 @@ impl<
                         self.worker_threads[source_leg - 1].stats = stats;
                     }
                     WorkerControlOut::Ext(event) => {
-                        self.output.push_back_safe(event);
+                        self.output.push_back(event);
                     }
                     WorkerControlOut::Spawn(cfg) => {
                         self.spawn(cfg);

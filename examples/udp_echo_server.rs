@@ -27,7 +27,7 @@ struct EchoWorkerCfg {
 struct EchoWorker {
     worker: u16,
     backend_slot: usize,
-    output: VecDeque<WorkerInnerOutput<'static, OwnerType, ExtOut, ChannelId, Event, SCfg>>,
+    output: VecDeque<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>>,
     shutdown: bool,
 }
 
@@ -61,17 +61,17 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
     }
 
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
-    fn on_tick<'a>(
+    fn on_tick(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         self.output.pop_front()
     }
-    fn on_event<'a>(
+    fn on_event(
         &mut self,
         _now: Instant,
-        event: WorkerInnerInput<'a, OwnerType, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+        event: WorkerInnerInput<OwnerType, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Net(_owner, BackendIncoming::UdpListenResult { bind, result }) => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
@@ -86,7 +86,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
                     BackendOutgoing::UdpPacket {
                         slot,
                         to: from,
-                        data: data.freeze(),
+                        data,
                     },
                 ))
             }
@@ -94,17 +94,17 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         }
     }
 
-    fn pop_output<'a>(
+    fn pop_output(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         self.output.pop_front()
     }
 
-    fn shutdown<'a>(
+    fn shutdown(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         if self.shutdown {
             return None;
         }

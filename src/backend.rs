@@ -14,13 +14,13 @@ pub use poll::PollBackend;
 #[cfg(feature = "polling-backend")]
 pub use polling::PollingBackend;
 
-use crate::{Buffer, BufferMut};
+use crate::Buffer;
 
 #[cfg(feature = "tun-tap")]
 use self::tun::TunFd;
 
 #[derive(Debug)]
-pub enum BackendIncomingEventRaw {
+pub enum BackendIncoming {
     #[cfg(feature = "udp")]
     UdpListenResult {
         bind: SocketAddr,
@@ -30,47 +30,26 @@ pub enum BackendIncomingEventRaw {
     UdpPacket {
         slot: usize,
         from: SocketAddr,
-        len: usize,
+        data: Buffer,
     },
     #[cfg(feature = "tun-tap")]
     TunBindResult {
         result: Result<usize, std::io::Error>,
     },
     #[cfg(feature = "tun-tap")]
-    TunPacket { slot: usize, len: usize },
-}
-
-#[derive(Debug)]
-pub enum BackendIncoming<'a> {
-    #[cfg(feature = "udp")]
-    UdpListenResult {
-        bind: SocketAddr,
-        result: Result<(SocketAddr, usize), std::io::Error>,
-    },
-    #[cfg(feature = "udp")]
-    UdpPacket {
-        slot: usize,
-        from: SocketAddr,
-        data: BufferMut<'a>,
-    },
-    #[cfg(feature = "tun-tap")]
-    TunBindResult {
-        result: Result<usize, std::io::Error>,
-    },
-    #[cfg(feature = "tun-tap")]
-    TunPacket { slot: usize, data: BufferMut<'a> },
+    TunPacket { slot: usize, data: Buffer },
 }
 
 /// Represents an incoming network event.
 #[derive(Debug)]
-pub enum BackendIncomingRaw<Owner> {
-    Event(Owner, BackendIncomingEventRaw),
+pub enum BackendIncomingInternal<Owner> {
+    Event(Owner, BackendIncoming),
     Awake,
 }
 
 /// Represents an outgoing network control.
 #[derive(Debug, PartialEq, Eq)]
-pub enum BackendOutgoing<'a> {
+pub enum BackendOutgoing {
     #[cfg(feature = "udp")]
     UdpListen { addr: SocketAddr, reuse: bool },
     #[cfg(feature = "udp")]
@@ -79,20 +58,20 @@ pub enum BackendOutgoing<'a> {
     UdpPacket {
         slot: usize,
         to: SocketAddr,
-        data: Buffer<'a>,
+        data: Buffer,
     },
     #[cfg(feature = "udp")]
     UdpPackets {
         slot: usize,
         to: Vec<SocketAddr>,
-        data: Buffer<'a>,
+        data: Buffer,
     },
     #[cfg(feature = "tun-tap")]
     TunBind { fd: TunFd },
     #[cfg(feature = "tun-tap")]
     TunUnbind { slot: usize },
     #[cfg(feature = "tun-tap")]
-    TunPacket { slot: usize, data: Buffer<'a> },
+    TunPacket { slot: usize, data: Buffer },
 }
 
 pub trait Awaker: Send + Sync {
@@ -102,7 +81,7 @@ pub trait Awaker: Send + Sync {
 pub trait Backend<Owner>: Default + BackendOwner<Owner> {
     fn create_awaker(&self) -> Arc<dyn Awaker>;
     fn poll_incoming(&mut self, timeout: Duration);
-    fn pop_incoming(&mut self, buf: &mut [u8]) -> Option<BackendIncomingRaw<Owner>>;
+    fn pop_incoming(&mut self) -> Option<BackendIncomingInternal<Owner>>;
     fn finish_outgoing_cycle(&mut self);
     fn finish_incoming_cycle(&mut self);
 }
@@ -124,6 +103,14 @@ pub mod tun {
     pub struct TunFd {
         pub fd: Fd,
         pub read: bool,
+    }
+
+    impl Eq for TunFd {}
+
+    impl PartialEq for TunFd {
+        fn eq(&self, other: &Self) -> bool {
+            self.fd.0 == other.fd.0
+        }
     }
 
     impl std::fmt::Debug for TunFd {

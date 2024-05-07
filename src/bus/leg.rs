@@ -35,7 +35,7 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> Default
 
 impl<ChannelId, MSG, const STATIC_SIZE: usize> QueueInternal<ChannelId, MSG, STATIC_SIZE> {
     pub fn push_safe(&mut self, source: BusEventSource<ChannelId>, msg: MSG) -> usize {
-        self.queue.push_back_safe((source, msg));
+        self.queue.push_back((source, msg));
         let after = self.queue.len();
         if after == 1 {
             if let Some(awaker) = self.awaker.as_ref() {
@@ -51,7 +51,11 @@ impl<ChannelId, MSG, const STATIC_SIZE: usize> QueueInternal<ChannelId, MSG, STA
         source: BusEventSource<ChannelId>,
         msg: MSG,
     ) -> Result<usize, ()> {
-        self.queue.push_back(safe, (source, msg)).map_err(|_| ())?;
+        if safe {
+            self.queue.push_back((source, msg));
+        } else {
+            self.queue.push_back_stack((source, msg)).map_err(|_| ())?;
+        }
         let after = self.queue.len();
         if after == 1 {
             if let Some(awaker) = self.awaker.as_ref() {

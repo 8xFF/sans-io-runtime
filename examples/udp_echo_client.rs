@@ -9,7 +9,7 @@ use std::{
 
 use sans_io_runtime::{
     backend::{BackendIncoming, BackendOutgoing, PollBackend},
-    group_owner_type, group_task, Buffer, Controller, ErrorDebugger2, TaskSwitcher, WorkerInner,
+    group_owner_type, Buffer, Controller, ErrorDebugger2, Task, TaskGroup, WorkerInner,
     WorkerInnerInput, WorkerInnerOutput,
 };
 
@@ -20,8 +20,8 @@ type SCfg = EchoTaskCfg;
 type ChannelId = ();
 type Event = ();
 
-enum EchoTaskOutput<'a> {
-    Net(BackendOutgoing<'a>),
+enum EchoTaskOutput {
+    Net(BackendOutgoing),
     Destroy,
 }
 
@@ -37,7 +37,7 @@ struct EchoTask {
     cfg: EchoTaskCfg,
     local_addr: SocketAddr,
     local_backend_slot: usize,
-    output: heapless::Deque<EchoTaskOutput<'static>, 16>,
+    output: heapless::Deque<EchoTaskOutput, 16>,
 }
 
 impl EchoTask {
@@ -60,16 +60,12 @@ impl EchoTask {
     }
 }
 
-impl EchoTask {
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<EchoTaskOutput<'a>> {
+impl Task<BackendIncoming, EchoTaskOutput> for EchoTask {
+    fn on_tick(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
         self.output.pop_front()
     }
 
-    fn on_event<'a>(
-        &mut self,
-        _now: Instant,
-        input: BackendIncoming<'a>,
-    ) -> Option<EchoTaskOutput<'a>> {
+    fn on_event(&mut self, _now: Instant, input: BackendIncoming) -> Option<EchoTaskOutput> {
         match input {
             BackendIncoming::UdpListenResult { bind, result } => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
@@ -97,18 +93,19 @@ impl EchoTask {
                     Some(EchoTaskOutput::Net(BackendOutgoing::UdpPacket {
                         slot,
                         to: from,
-                        data: data.freeze(),
+                        data,
                     }))
                 }
             }
+            _ => None,
         }
     }
 
-    fn pop_output<'a>(&mut self, _now: Instant) -> Option<EchoTaskOutput<'a>> {
+    fn pop_output(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
         self.output.pop_front()
     }
 
-    fn shutdown<'a>(&mut self, _now: Instant) -> Option<EchoTaskOutput<'a>> {
+    fn shutdown(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
         log::info!("EchoTask shutdown");
         self.output
             .push_back(EchoTaskOutput::Net(BackendOutgoing::UdpUnlisten {
@@ -123,16 +120,10 @@ impl EchoTask {
 }
 
 group_owner_type!(OwnerType);
-group_task!(
-    EchoTaskGroup,
-    EchoTask,
-    BackendIncoming<'a>,
-    EchoTaskOutput<'a>
-);
 
 struct EchoWorkerInner {
     worker: u16,
-    tasks: EchoTaskGroup,
+    tasks: TaskGroup<BackendIncoming, EchoTaskOutput, EchoTask, 16>,
 }
 
 impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
@@ -147,7 +138,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
     fn build(worker: u16, _cfg: ICfg) -> Self {
         Self {
             worker,
-            tasks: EchoTaskGroup::default(),
+            tasks: TaskGroup::default(),
         }
     }
 
@@ -155,19 +146,19 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         self.tasks.add_task(EchoTask::new(cfg));
     }
 
-    fn on_tick<'a>(
+    fn on_tick(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         let (index, out) = self.tasks.on_tick(now)?;
         self.convert_output(OwnerType(index), out)
     }
 
-    fn on_event<'a>(
+    fn on_event(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, OwnerType, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+        event: WorkerInnerInput<OwnerType, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Net(owner, event) => {
                 let out = self.tasks.on_event(now, owner.index(), event)?;
@@ -177,29 +168,29 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         }
     }
 
-    fn pop_output<'a>(
+    fn pop_output(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         let (index, out) = self.tasks.pop_output(now)?;
         self.convert_output(OwnerType(index), out)
     }
 
-    fn shutdown<'a>(
+    fn shutdown(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         let (index, out) = self.tasks.shutdown(now)?;
         self.convert_output(OwnerType(index), out)
     }
 }
 
 impl EchoWorkerInner {
-    fn convert_output<'a>(
+    fn convert_output(
         &mut self,
         owner: OwnerType,
-        out: EchoTaskOutput<'a>,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+        out: EchoTaskOutput,
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         match out {
             EchoTaskOutput::Net(out) => Some(WorkerInnerOutput::Net(owner, out)),
             EchoTaskOutput::Destroy => {

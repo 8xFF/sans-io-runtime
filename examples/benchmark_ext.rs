@@ -48,34 +48,34 @@ impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for E
     }
 
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
-    fn on_tick<'a>(
+    fn on_tick(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
         None
     }
-    fn on_event<'a>(
+    fn on_event(
         &mut self,
         _now: Instant,
-        event: WorkerInnerInput<'a, SimpleOwner, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
+        event: WorkerInnerInput<SimpleOwner, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
         match event {
             WorkerInnerInput::Ext(ext) => Some(WorkerInnerOutput::Ext(true, ext)),
             _ => None,
         }
     }
 
-    fn pop_output<'a>(
+    fn pop_output(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
         None
     }
 
-    fn shutdown<'a>(
+    fn shutdown(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
+    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
         if self.shutdown {
             return None;
         }

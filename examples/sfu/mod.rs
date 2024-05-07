@@ -8,8 +8,8 @@ use std::{
 use derive_more::Display;
 use sans_io_runtime::{
     backend::{BackendIncoming, BackendOutgoing},
-    group_owner_type, group_task, BusControl, BusEvent, TaskSwitcher, WorkerInner,
-    WorkerInnerInput, WorkerInnerOutput,
+    group_owner_type, BusControl, BusEvent, TaskGroup, TaskSwitcher, WorkerInner, WorkerInnerInput,
+    WorkerInnerOutput,
 };
 use str0m::{
     change::DtlsCert,
@@ -92,10 +92,7 @@ pub enum SCfg {
 }
 
 group_owner_type!(WhipOwner);
-group_task!(WhipTaskGroup, WhipTask, WhipInput<'a>, WhipOutput);
-
 group_owner_type!(WhepOwner);
-group_task!(WhepTaskGroup, WhepTask, WhepInput<'a>, WhepOutput);
 
 #[derive(convert_enum::From, Debug, Clone, Copy, PartialEq)]
 pub enum OwnerType {
@@ -108,9 +105,9 @@ pub enum OwnerType {
 pub struct SfuWorker {
     worker: u16,
     dtls_cert: DtlsCert,
-    whip_group: WhipTaskGroup,
-    whep_group: WhepTaskGroup,
-    output: VecDeque<WorkerInnerOutput<'static, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>>,
+    whip_group: TaskGroup<WhipInput, WhipOutput, WhipTask, 64>,
+    whep_group: TaskGroup<WhepInput, WhepOutput, WhepTask, 64>,
+    output: VecDeque<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>>,
     shared_udp: SharedUdpPort<TaskId>,
     switcher: TaskSwitcher,
 }
@@ -243,12 +240,12 @@ enum TaskType {
 }
 
 impl SfuWorker {
-    fn process_whip_out<'a>(
+    fn process_whip_out(
         &mut self,
         _now: Instant,
         index: usize,
         out: WhipOutput,
-    ) -> WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg> {
+    ) -> WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg> {
         self.switcher.queue_flag_task(TaskType::Whip as usize);
         let owner = OwnerType::Whip(index.into());
         match out {
@@ -275,12 +272,12 @@ impl SfuWorker {
         }
     }
 
-    fn process_whep_out<'a>(
+    fn process_whep_out(
         &mut self,
         _now: Instant,
         index: usize,
         out: WhepOutput,
-    ) -> WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg> {
+    ) -> WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg> {
         self.switcher.queue_flag_task(TaskType::Whep as usize);
         let owner = OwnerType::Whep(index.into());
         match out {
@@ -313,8 +310,8 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
         Self {
             worker,
             dtls_cert: DtlsCert::new_openssl(),
-            whip_group: WhipTaskGroup::default(),
-            whep_group: WhepTaskGroup::default(),
+            whip_group: TaskGroup::default(),
+            whep_group: TaskGroup::default(),
             output: VecDeque::from([WorkerInnerOutput::Net(
                 OwnerType::System,
                 BackendOutgoing::UdpListen {
@@ -339,10 +336,10 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
             }
         }
     }
-    fn on_tick<'a>(
+    fn on_tick(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
         if let Some(e) = self.output.pop_front() {
             return Some(e.into());
         }
@@ -368,11 +365,11 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
         }
     }
 
-    fn on_event<'a>(
+    fn on_event(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, OwnerType, ExtIn, ChannelId, SfuEvent>,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
+        event: WorkerInnerInput<OwnerType, ExtIn, ChannelId, SfuEvent>,
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
         match event {
             WorkerInnerInput::Net(_owner, BackendIncoming::UdpListenResult { bind: _, result }) => {
                 log::info!("UdpListenResult: {:?}", result);
@@ -392,10 +389,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
                     let out = self.whip_group.on_event(
                         now,
                         index,
-                        WhipInput::UdpPacket {
-                            from,
-                            data: data.freeze(),
-                        },
+                        WhipInput::UdpPacket { from, data },
                     )?;
                     Some(self.process_whip_out(now, index, out))
                 }
@@ -403,10 +397,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
                     let out = self.whep_group.on_event(
                         now,
                         index,
-                        WhepInput::UdpPacket {
-                            from,
-                            data: data.freeze(),
-                        },
+                        WhepInput::UdpPacket { from, data },
                     )?;
                     Some(self.process_whep_out(now, index, out))
                 }
@@ -439,13 +430,13 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
         }
     }
 
-    fn pop_output<'a>(
+    fn pop_output(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
         let switcher = &mut self.switcher;
         while let Some(current) = switcher.queue_current() {
-            match current.into() {
+            match current.try_into().ok()? {
                 TaskType::Whip => {
                     if let Some((index, out)) =
                         switcher.queue_process(self.whip_group.pop_output(now))
@@ -465,13 +456,13 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
         None
     }
 
-    fn shutdown<'a>(
+    fn shutdown(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
+    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, SfuEvent, SCfg>> {
         let switcher = &mut self.switcher;
         loop {
-            match switcher.looper_current(now)?.into() {
+            match switcher.looper_current(now)?.try_into().ok()? {
                 TaskType::Whip => {
                     if let Some((index, out)) =
                         switcher.looper_process(self.whip_group.shutdown(now))

@@ -85,7 +85,7 @@ impl Task1 {
 }
 
 impl Task<(), ()> for Task1 {
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<()> {
+    fn on_tick(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
@@ -93,11 +93,11 @@ impl Task<(), ()> for Task1 {
         None
     }
 
-    fn pop_output<'a>(&mut self, _now: Instant) -> Option<()> {
+    fn pop_output(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
-    fn shutdown<'a>(&mut self, _now: Instant) -> Option<()> {
+    fn shutdown(&mut self, _now: Instant) -> Option<()> {
         log::info!("task1 received shutdown");
         Some(())
     }
@@ -115,7 +115,7 @@ impl Task2 {
 }
 
 impl Task<(), ()> for Task2 {
-    fn on_tick<'a>(&mut self, _now: Instant) -> Option<()> {
+    fn on_tick(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
@@ -123,11 +123,11 @@ impl Task<(), ()> for Task2 {
         None
     }
 
-    fn pop_output<'a>(&mut self, _now: Instant) -> Option<()> {
+    fn pop_output(&mut self, _now: Instant) -> Option<()> {
         None
     }
 
-    fn shutdown<'a>(&mut self, _now: Instant) -> Option<()> {
+    fn shutdown(&mut self, _now: Instant) -> Option<()> {
         log::info!("task2 received shutdown");
         Some(())
     }
@@ -180,11 +180,10 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
         }
     }
 
-    fn on_tick<'a>(
+    fn on_tick(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
-    {
+    ) -> Option<WorkerInnerOutput<OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         let switcher = &mut self.switcher;
         loop {
             match switcher.looper_current(now)? {
@@ -203,20 +202,18 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
         }
     }
 
-    fn on_event<'a>(
+    fn on_event(
         &mut self,
         _now: Instant,
-        _event: WorkerInnerInput<'a, OwnerType, TestExtIn, TestChannel, TestEvent>,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
-    {
+        _event: WorkerInnerInput<OwnerType, TestExtIn, TestChannel, TestEvent>,
+    ) -> Option<WorkerInnerOutput<OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         None
     }
 
-    fn pop_output<'a>(
+    fn pop_output(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
-    {
+    ) -> Option<WorkerInnerOutput<OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         let switcher = &mut self.switcher;
         loop {
             match switcher.queue_current()? {
@@ -235,11 +232,10 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
         }
     }
 
-    fn shutdown<'a>(
+    fn shutdown(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>>
-    {
+    ) -> Option<WorkerInnerOutput<OwnerType, TestExtOut, TestChannel, TestEvent, TestSCfg>> {
         loop {
             match self.switcher.looper_current(now)? {
                 0 => {

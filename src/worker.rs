@@ -5,14 +5,11 @@ use std::{
 };
 
 use crate::{
-    backend::{
-        Backend, BackendIncoming, BackendIncomingEventRaw, BackendIncomingRaw, BackendOutgoing,
-    },
+    backend::{Backend, BackendIncoming, BackendIncomingInternal, BackendOutgoing},
     bus::{
         BusEventSource, BusLocalHub, BusPubSubFeature, BusSendMultiFeature, BusSendSingleFeature,
         BusWorker,
     },
-    BufferMut,
 };
 
 #[derive(Debug)]
@@ -100,14 +97,14 @@ impl WorkerStats {
 }
 
 #[derive(Debug)]
-pub enum WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event> {
-    Net(Owner, BackendIncoming<'a>),
+pub enum WorkerInnerInput<Owner, ExtIn, ChannelId, Event> {
+    Net(Owner, BackendIncoming),
     Bus(BusEvent<Owner, ChannelId, Event>),
     Ext(ExtIn),
 }
 
-pub enum WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg> {
-    Net(Owner, BackendOutgoing<'a>),
+pub enum WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg> {
+    Net(Owner, BackendOutgoing),
     Bus(BusControl<Owner, ChannelId, Event>),
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
@@ -121,23 +118,23 @@ pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
     fn spawn(&mut self, now: Instant, cfg: SCfg);
-    fn on_tick<'a>(
+    fn on_tick(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
-    fn on_event<'a>(
+    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
+    fn on_event(
         &mut self,
         now: Instant,
-        event: WorkerInnerInput<'a, Owner, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
-    fn pop_output<'a>(
+        event: WorkerInnerInput<Owner, ExtIn, ChannelId, Event>,
+    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
+    fn pop_output(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
-    fn shutdown<'a>(
+    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
+    fn shutdown(
         &mut self,
         now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, Owner, ExtOut, ChannelId, Event, SCfg>>;
+    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
 }
 
 pub(crate) struct Worker<
@@ -160,7 +157,6 @@ pub(crate) struct Worker<
     backend: B,
     worker_out: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
     worker_in: BusWorker<u16, WorkerControlIn<ExtIn, SCfg>, INNER_BUS_STACK>,
-    network_buffer: [u8; 8096],
     _tmp: std::marker::PhantomData<(Owner, ICfg)>,
 }
 
@@ -195,7 +191,6 @@ impl<
             backend,
             worker_out,
             worker_in,
-            network_buffer: [0; 8096],
             _tmp: Default::default(),
         }
     }
@@ -259,35 +254,10 @@ impl<
 
         self.backend.poll_incoming(remain_time);
 
-        while let Some(event) = self.backend.pop_incoming(&mut self.network_buffer) {
+        while let Some(event) = self.backend.pop_incoming() {
             match event {
-                BackendIncomingRaw::Awake => self.on_awake(now),
-                BackendIncomingRaw::Event(owner, event) => {
-                    let event = match event {
-                        #[cfg(feature = "udp")]
-                        BackendIncomingEventRaw::UdpListenResult { bind, result } => {
-                            BackendIncoming::UdpListenResult { bind, result }
-                        }
-                        #[cfg(feature = "udp")]
-                        BackendIncomingEventRaw::UdpPacket { slot, from, len } => {
-                            BackendIncoming::UdpPacket {
-                                slot,
-                                from,
-                                data: BufferMut::from_slice_raw(&mut self.network_buffer, 0..len),
-                            }
-                        }
-                        #[cfg(feature = "tun")]
-                        BackendIncomingEventRaw::TunBindResult { result } => {
-                            BackendIncoming::TunBindResult { result }
-                        }
-                        #[cfg(feature = "tun")]
-                        BackendIncomingEventRaw::TunPacket { slot, len } => {
-                            BackendIncoming::TunPacket {
-                                slot,
-                                data: BufferMut::from_slice_raw(&mut self.network_buffer, 0..len),
-                            }
-                        }
-                    };
+                BackendIncomingInternal::Awake => self.on_awake(now),
+                BackendIncomingInternal::Event(owner, event) => {
                     Self::on_input_event(
                         now,
                         WorkerInnerInput::Net(owner, event),

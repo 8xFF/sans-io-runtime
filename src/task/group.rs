@@ -39,7 +39,7 @@ impl<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> TaskGroup<In, Out, T, S
             }
         }
 
-        self.tasks.push_safe(Some(task));
+        self.tasks.push(Some(task));
         self.switcher.set_tasks(self.tasks.len());
         self.tasks.len() - 1
     }
