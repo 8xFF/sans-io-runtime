@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sans_io_runtime::backend::PollingBackend;
+use sans_io_runtime::collections::DynamicDeque;
 use sans_io_runtime::{
     group_owner_type, Controller, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
@@ -25,6 +26,7 @@ struct EchoWorkerCfg {}
 struct EchoWorker {
     worker: u16,
     shutdown: bool,
+    queue: DynamicDeque<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>, 16>,
 }
 
 impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
@@ -32,6 +34,7 @@ impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for E
         Self {
             worker,
             shutdown: false,
+            queue: Default::default(),
         }
     }
 
@@ -48,20 +51,14 @@ impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for E
     }
 
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
-    fn on_tick(
-        &mut self,
-        _now: Instant,
-    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
-        None
-    }
+    fn on_tick(&mut self, _now: Instant) {}
     fn on_event(
         &mut self,
         _now: Instant,
         event: WorkerInnerInput<SimpleOwner, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
-        match event {
-            WorkerInnerInput::Ext(ext) => Some(WorkerInnerOutput::Ext(true, ext)),
-            _ => None,
+    ) {
+        if let WorkerInnerInput::Ext(ext) = event {
+            self.queue.push_back(WorkerInnerOutput::Ext(true, ext));
         }
     }
 
@@ -69,19 +66,12 @@ impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for E
         &mut self,
         _now: Instant,
     ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
-        None
+        self.queue.pop_front()
     }
 
-    fn shutdown(
-        &mut self,
-        _now: Instant,
-    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
-        if self.shutdown {
-            return None;
-        }
+    fn on_shutdown(&mut self, _now: Instant) {
         log::info!("EchoServer {} shutdown", self.worker);
         self.shutdown = true;
-        None
     }
 }
 

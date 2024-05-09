@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 /// deque.push_back(6); // Should overflow to heap
 /// assert_eq!(deque.len(), 6);
 /// ```
+#[derive(Debug)]
 pub struct DynamicDeque<T, const STACK_SIZE: usize> {
     stack: heapless::Deque<T, STACK_SIZE>,
     heap: VecDeque<T>,

@@ -1,6 +1,8 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl, Task};
+use sans_io_runtime::{
+    collections::DynamicDeque, return_if_none, Buffer, BusChannelControl, Task, TaskSwitcherChild,
+};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
@@ -42,6 +44,7 @@ pub struct WhepTask {
     video_mid: Option<Mid>,
     channel_id: u64,
     output: DynamicDeque<WhepOutput, 16>,
+    has_input: bool,
 }
 
 impl WhepTask {
@@ -84,6 +87,7 @@ impl WhepTask {
             video_mid: None,
             channel_id: channel,
             output: DynamicDeque::default(),
+            has_input: false,
         };
 
         Ok(WhepTaskBuildResult {
@@ -179,24 +183,25 @@ impl WhepTask {
 
 impl Task<WhepInput, WhepOutput> for WhepTask {
     /// Called on each tick of the task.
-    fn on_tick(&mut self, now: Instant) -> Option<WhepOutput> {
-        let timeout = self.timeout?;
+    fn on_tick(&mut self, now: Instant) {
+        let timeout = return_if_none!(self.timeout);
         if now < timeout {
-            return None;
+            return;
         }
 
+        self.has_input = true;
         if let Err(e) = self.rtc.handle_input(Input::Timeout(now)) {
             log::error!("Error handling timeout: {}", e);
         }
         log::trace!("clear timeout after handled");
         self.timeout = None;
-        self.pop_event_inner(now, true)
     }
 
     /// Called when an input event is received for the task.
-    fn on_event(&mut self, now: Instant, input: WhepInput) -> Option<WhepOutput> {
+    fn on_event(&mut self, now: Instant, input: WhepInput) {
         match input {
             WhepInput::UdpPacket { from, data } => {
+                self.has_input = true;
                 if let Err(e) = self.rtc.handle_input(Input::Receive(
                     now,
                     Receive::new(Protocol::Udp, from, self.backend_addr, &data)
@@ -205,7 +210,6 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
                     log::error!("Error handling udp: {}", e);
                 }
                 self.timeout = None;
-                self.pop_event_inner(now, true)
             }
             WhepInput::Bus { channel, media } => {
                 let (mid, nackable) = if matches!(channel, ChannelId::ConsumeAudio(..)) {
@@ -215,12 +219,13 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
                 };
 
                 if let Some(mid) = mid {
+                    self.has_input = true;
                     if let Some(stream) = self.rtc.direct_api().stream_tx_by_mid(mid, None) {
-                        log::debug!(
+                        log::trace!(
                             "Write rtp for mid: {:?} {} {} {}",
                             mid,
-                            media.seq_no,
-                            media.header.timestamp,
+                            media.header.payload_type,
+                            media.header.sequence_number,
                             media.payload.len()
                         );
                         if let Err(e) = stream.write_rtp(
@@ -237,24 +242,16 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
                         }
                         log::trace!("clear timeout with media");
                         self.timeout = None;
-                        self.pop_event_inner(now, true)
-                    } else {
-                        None
                     }
                 } else {
                     log::error!("No mid for media {}", media.header.payload_type);
-                    None
                 }
             }
         }
     }
 
-    /// Retrieves the next output event from the task.
-    fn pop_output(&mut self, now: Instant) -> Option<WhepOutput> {
-        self.pop_event_inner(now, false)
-    }
-
-    fn shutdown(&mut self, now: Instant) -> Option<WhepOutput> {
+    fn on_shutdown(&mut self, now: Instant) {
+        self.has_input = true;
         self.rtc.disconnect();
         self.output
             .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
@@ -265,6 +262,18 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
                 ChannelId::ConsumeVideo(self.channel_id),
             )));
         self.output.push_back(WhepOutput::Destroy);
-        self.pop_event_inner(now, true)
+    }
+}
+
+impl TaskSwitcherChild<WhepOutput> for WhepTask {
+    type Time = Instant;
+    /// Retrieves the next output event from the task.
+    fn pop_output(&mut self, now: Instant) -> Option<WhepOutput> {
+        if self.has_input {
+            self.has_input = false;
+            self.pop_event_inner(now, true)
+        } else {
+            self.pop_event_inner(now, false)
+        }
     }
 }

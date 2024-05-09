@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, time::Instant};
 
-use crate::{collections::DynamicVec, Task, TaskSwitcher};
+use crate::{collections::DynamicVec, Task, TaskSwitcher, TaskSwitcherChild};
 
 /// Represents a group of tasks.
 pub struct TaskGroup<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> {
@@ -53,73 +53,55 @@ impl<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> TaskGroup<In, Out, T, S
         self.switcher.set_tasks(self.tasks.len());
     }
 
-    /// The idea of this function is external will call it utils it returns None.
-    /// If a task has output, we will return the output and save flag next_tick_index for next call.
-    /// In the end of list, we will clear next_tick_index
-    pub fn on_tick(&mut self, now: Instant) -> Option<(usize, Out)> {
-        while let Some(index) = self.switcher.looper_current(now) {
-            let task = match self.tasks.get_mut(index) {
-                Some(Some(task)) => task,
-                _ => {
-                    self.switcher.looper_process(None::<()>);
-                    continue;
-                }
-            };
-            if let Some(out) = self.switcher.looper_process(task.on_tick(now)) {
-                return Some((index, out));
+    /// Fire tick event to all tasks, after that we need to call pop_output util it return None
+    pub fn on_tick(&mut self, now: Instant) {
+        self.switcher.flag_all();
+        for index in 0..self.switcher.tasks() {
+            if let Some(Some(task)) = self.tasks.get_mut(index) {
+                task.on_tick(now);
             }
         }
-
-        None
     }
 
-    /// This function send an event to a task and return the output if the task has output.
-    /// If the task has output, we will return the output and save flag last_input_index for next pop_last_input call.
-    pub fn on_event(&mut self, now: Instant, index: usize, input: In) -> Option<Out> {
-        let task = self.tasks.get_mut(index)?.as_mut()?;
-        let out = task.on_event(now, input)?;
-        self.switcher.queue_flag_task(index);
-        Some(out)
-    }
-
-    /// Retrieves the output from the last processed task input event.
-    /// In SAN/IO we usually have some output when we receive an input event.
-    /// External will call this function util it return None.
-    /// We use last_input_index which is saved in previous on_input_event or on_input_tick and clear it after we got None.
-    pub fn pop_output(&mut self, now: Instant) -> Option<(usize, Out)> {
-        // We dont clear_destroyed_task here because have some case we have output after we received TaskOutput::Destroy the task.
-        // We will clear_destroyed_task in next pop_output call.
-
-        while let Some(index) = self.switcher.queue_current() {
-            let slot = self.tasks.get_mut(index);
-            if let Some(Some(slot)) = slot {
-                if let Some(out) = self.switcher.queue_process(slot.pop_output(now)) {
-                    return Some((index, out));
-                }
-            } else {
-                self.switcher.queue_process(None::<()>);
-            }
+    /// Send event to correct task with index
+    pub fn on_event(&mut self, now: Instant, index: usize, input: In) {
+        if let Some(Some(task)) = self.tasks.get_mut(index) {
+            self.switcher.flag_task(index);
+            task.on_event(now, input);
         }
-        None
     }
 
     /// Gracefully destroys the task group.
-    pub fn shutdown(&mut self, now: Instant) -> Option<(usize, Out)> {
-        while let Some(index) = self.switcher.looper_current(now) {
+    pub fn on_shutdown(&mut self, now: Instant) {
+        self.switcher.flag_all();
+        for index in 0..self.switcher.tasks() {
             log::info!("Group kill tasks {}/{}", index, self.switcher.tasks());
-            //We only call each task single time
-            self.switcher.looper_process(None::<()>);
-            let task = match self.tasks.get_mut(index) {
-                Some(Some(task)) => task,
-                _ => {
-                    continue;
-                }
-            };
-            if let Some(out) = task.shutdown(now) {
-                return Some((index, out));
+            if let Some(Some(task)) = self.tasks.get_mut(index) {
+                task.on_shutdown(now);
             }
         }
+    }
+}
 
+impl<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> TaskSwitcherChild<(usize, Out)>
+    for TaskGroup<In, Out, T, STACK_SIZE>
+{
+    type Time = T::Time;
+
+    /// Retrieves the output from the flagged processed task.
+    fn pop_output(&mut self, now: Self::Time) -> Option<(usize, Out)> {
+        while let Some(index) = self.switcher.current() {
+            let slot = self.tasks.get_mut(index);
+            if let Some(Some(slot)) = slot {
+                if let Some(out) = slot.pop_output(now) {
+                    return Some((index, out));
+                } else {
+                    self.switcher.finished(index);
+                }
+            } else {
+                self.switcher.finished(index);
+            }
+        }
         None
     }
 }

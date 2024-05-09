@@ -118,20 +118,10 @@ pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
     fn spawn(&mut self, now: Instant, cfg: SCfg);
-    fn on_tick(
-        &mut self,
-        now: Instant,
-    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
-    fn on_event(
-        &mut self,
-        now: Instant,
-        event: WorkerInnerInput<Owner, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
+    fn on_tick(&mut self, now: Instant);
+    fn on_event(&mut self, now: Instant, event: WorkerInnerInput<Owner, ExtIn, ChannelId, Event>);
+    fn on_shutdown(&mut self, now: Instant);
     fn pop_output(
-        &mut self,
-        now: Instant,
-    ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
-    fn shutdown(
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>>;
@@ -195,20 +185,18 @@ impl<
         }
     }
 
+    pub fn init(&mut self) {
+        let now = Instant::now();
+        self.pop_inner(now);
+    }
+
     pub fn process(&mut self) {
         let now = Instant::now();
         while let Some((_source, msg)) = self.worker_in.recv() {
             match msg {
                 WorkerControlIn::Ext(ext) => {
-                    Self::on_input_event(
-                        now,
-                        WorkerInnerInput::Ext(ext),
-                        &mut self.inner,
-                        &mut self.inner_bus,
-                        &mut self.worker_out,
-                        &mut self.backend,
-                        &mut self.bus_local_hub,
-                    );
+                    self.inner.on_event(now, WorkerInnerInput::Ext(ext));
+                    self.pop_inner(now);
                 }
                 WorkerControlIn::Spawn(cfg) => {
                     self.inner.spawn(now, cfg);
@@ -223,28 +211,15 @@ impl<
                         .expect("Should send success with safe flag");
                 }
                 WorkerControlIn::Shutdown => {
-                    Self::on_shutdown(
-                        now,
-                        &mut self.inner,
-                        &mut self.inner_bus,
-                        &mut self.worker_out,
-                        &mut self.backend,
-                        &mut self.bus_local_hub,
-                    );
+                    self.inner.on_shutdown(now);
                 }
             }
         }
 
         if now.duration_since(self.last_tick) >= self.tick {
             self.last_tick = now;
-            Self::on_input_tick(
-                now,
-                &mut self.inner,
-                &mut self.inner_bus,
-                &mut self.worker_out,
-                &mut self.backend,
-                &mut self.bus_local_hub,
-            );
+            self.inner.on_tick(now);
+            self.pop_inner(now);
         }
 
         //one cycle is process in 1ms then we minus 1ms with eslaped time
@@ -258,15 +233,9 @@ impl<
             match event {
                 BackendIncomingInternal::Awake => self.on_awake(now),
                 BackendIncomingInternal::Event(owner, event) => {
-                    Self::on_input_event(
-                        now,
-                        WorkerInnerInput::Net(owner, event),
-                        &mut self.inner,
-                        &mut self.inner_bus,
-                        &mut self.worker_out,
-                        &mut self.backend,
-                        &mut self.bus_local_hub,
-                    );
+                    self.inner
+                        .on_event(now, WorkerInnerInput::Net(owner, event));
+                    self.pop_inner(now);
                 }
             }
         }
@@ -278,87 +247,30 @@ impl<
         }
     }
 
-    fn on_input_tick(
-        now: Instant,
-        inner: &mut Inner,
-        inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
-        backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
-    ) {
-        let worker = inner.worker_index();
-        while let Some(out) = inner.on_tick(now) {
-            Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
-            while let Some(out) = inner.pop_output(now) {
-                Self::process_inner_output(
-                    out,
-                    worker,
-                    inner_bus,
-                    worker_out,
-                    backend,
-                    bus_local_hub,
-                );
-            }
-        }
-    }
-
-    fn on_shutdown(
-        now: Instant,
-        inner: &mut Inner,
-        inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
-        backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
-    ) {
-        let worker = inner.worker_index();
-        while let Some(out) = inner.shutdown(now) {
-            log::info!("Process shutdown");
-            Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
-            while let Some(out) = inner.pop_output(now) {
-                Self::process_inner_output(
-                    out,
-                    worker,
-                    inner_bus,
-                    worker_out,
-                    backend,
-                    bus_local_hub,
-                );
-            }
-        }
-    }
-
     fn on_awake(&mut self, now: Instant) {
         while let Some((source, event)) = self.inner_bus.recv() {
             match source {
                 BusEventSource::Channel(_, channel) => {
                     if let Some(subscribers) = self.bus_local_hub.get_subscribers(channel) {
                         for subscriber in subscribers {
-                            Self::on_input_event(
+                            self.inner.on_event(
                                 now,
                                 WorkerInnerInput::Bus(BusEvent::Channel(
                                     subscriber,
                                     channel,
                                     event.clone(),
                                 )),
-                                &mut self.inner,
-                                &mut self.inner_bus,
-                                &mut self.worker_out,
-                                &mut self.backend,
-                                &mut self.bus_local_hub,
                             );
+                            self.pop_inner(now);
                         }
                     }
                 }
                 BusEventSource::Broadcast(from) => {
-                    Self::on_input_event(
+                    self.inner.on_event(
                         now,
                         WorkerInnerInput::Bus(BusEvent::Broadcast(from as u16, event.clone())),
-                        &mut self.inner,
-                        &mut self.inner_bus,
-                        &mut self.worker_out,
-                        &mut self.backend,
-                        &mut self.bus_local_hub,
                     );
+                    self.pop_inner(now);
                 }
                 _ => panic!(
                     "Invalid channel source for task {:?}, only support channel",
@@ -368,77 +280,55 @@ impl<
         }
     }
 
-    fn on_input_event(
-        now: Instant,
-        input: WorkerInnerInput<Owner, ExtIn, ChannelId, Event>,
-        inner: &mut Inner,
-        inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
-        backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
-    ) {
-        let worker = inner.worker_index();
-        if let Some(out) = inner.on_event(now, input) {
-            Self::process_inner_output(out, worker, inner_bus, worker_out, backend, bus_local_hub);
-            while let Some(out) = inner.pop_output(now) {
-                Self::process_inner_output(
-                    out,
-                    worker,
-                    inner_bus,
-                    worker_out,
-                    backend,
-                    bus_local_hub,
-                );
-            }
+    fn pop_inner(&mut self, now: Instant) {
+        while let Some(out) = self.inner.pop_output(now) {
+            self.process_inner_output(out);
         }
     }
 
     fn process_inner_output(
+        &mut self,
         out: WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg>,
-        worker: u16,
-        inner_bus: &mut BusWorker<ChannelId, Event, INNER_BUS_STACK>,
-        worker_out: &mut BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
-        backend: &mut B,
-        bus_local_hub: &mut BusLocalHub<Owner, ChannelId>,
     ) {
+        let worker = self.inner.worker_index();
         match out {
             WorkerInnerOutput::Spawn(cfg) => {
-                worker_out
+                self.worker_out
                     .send(0, true, WorkerControlOut::Spawn(cfg))
                     .expect("Should send success with safe flag");
             }
             WorkerInnerOutput::Net(owner, action) => {
-                backend.on_action(owner, action);
+                self.backend.on_action(owner, action);
             }
             WorkerInnerOutput::Bus(event) => match event {
                 BusControl::Channel(owner, BusChannelControl::Subscribe(channel)) => {
-                    if bus_local_hub.subscribe(owner, channel) {
+                    if self.bus_local_hub.subscribe(owner, channel) {
                         log::info!("Worker {worker} subscribe to channel {:?}", channel);
-                        inner_bus.subscribe(channel);
+                        self.inner_bus.subscribe(channel);
                     }
                 }
                 BusControl::Channel(owner, BusChannelControl::Unsubscribe(channel)) => {
-                    if bus_local_hub.unsubscribe(owner, channel) {
+                    if self.bus_local_hub.unsubscribe(owner, channel) {
                         log::info!("Worker {worker} unsubscribe from channel {:?}", channel);
-                        inner_bus.unsubscribe(channel);
+                        self.inner_bus.unsubscribe(channel);
                     }
                 }
                 BusControl::Channel(_owner, BusChannelControl::Publish(channel, safe, msg)) => {
-                    inner_bus.publish(channel, safe, msg);
+                    self.inner_bus.publish(channel, safe, msg);
                 }
                 BusControl::Broadcast(safe, msg) => {
-                    inner_bus.broadcast(safe, msg);
+                    self.inner_bus.broadcast(safe, msg);
                 }
             },
             WorkerInnerOutput::Destroy(owner) => {
                 log::info!("Worker {worker} destroy owner {:?}", owner);
-                backend.remove_owner(owner);
-                bus_local_hub.remove_owner(owner);
+                self.backend.remove_owner(owner);
+                self.bus_local_hub.remove_owner(owner);
             }
             WorkerInnerOutput::Ext(safe, ext) => {
                 // TODO don't hardcode 0
                 log::debug!("Worker {worker} send external");
-                if let Err(e) = worker_out.send(0, safe, WorkerControlOut::Ext(ext)) {
+                if let Err(e) = self.worker_out.send(0, safe, WorkerControlOut::Ext(ext)) {
                     log::error!("Failed to send external: {:?}", e);
                 }
             }

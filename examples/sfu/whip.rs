@@ -1,6 +1,8 @@
 use std::{net::SocketAddr, time::Instant};
 
-use sans_io_runtime::{collections::DynamicDeque, Buffer, BusChannelControl, Task};
+use sans_io_runtime::{
+    collections::DynamicDeque, return_if_none, Buffer, BusChannelControl, Task, TaskSwitcherChild,
+};
 use str0m::{
     change::{DtlsCert, SdpOffer},
     ice::IceCreds,
@@ -42,6 +44,7 @@ pub struct WhipTask {
     video_mid: Option<Mid>,
     channel_id: u64,
     output: DynamicDeque<WhipOutput, 8>,
+    has_input: bool,
 }
 
 impl WhipTask {
@@ -83,6 +86,7 @@ impl WhipTask {
             video_mid: None,
             channel_id: channel,
             output: DynamicDeque::default(),
+            has_input: false,
         };
 
         Ok(WhipTaskBuildResult {
@@ -153,6 +157,12 @@ impl WhipTask {
                             ChannelId::ConsumeVideo(self.channel_id)
                         };
                         let media = TrackMedia::from_raw(rtp);
+                        log::trace!(
+                            "WhipServerTask on video {} {} {}",
+                            media.header.payload_type,
+                            media.header.sequence_number,
+                            media.payload.len(),
+                        );
                         return Some(WhipOutput::Bus(BusChannelControl::Publish(
                             channel, false, media,
                         )));
@@ -168,23 +178,24 @@ impl WhipTask {
 
 impl Task<WhipInput, WhipOutput> for WhipTask {
     /// Called on each tick of the task.
-    fn on_tick(&mut self, now: Instant) -> Option<WhipOutput> {
-        let timeout = self.timeout?;
+    fn on_tick(&mut self, now: Instant) {
+        let timeout = return_if_none!(self.timeout);
         if now < timeout {
-            return None;
+            return;
         }
 
+        self.has_input = true;
         if let Err(e) = self.rtc.handle_input(Input::Timeout(now)) {
             log::error!("Error handling timeout: {}", e);
         }
         self.timeout = None;
-        self.pop_event_inner(now, true)
     }
 
     /// Called when an input event is received for the task.
-    fn on_event(&mut self, now: Instant, input: WhipInput) -> Option<WhipOutput> {
+    fn on_event(&mut self, now: Instant, input: WhipInput) {
         match input {
             WhipInput::UdpPacket { from, data } => {
+                self.has_input = true;
                 if let Err(e) = self.rtc.handle_input(Input::Receive(
                     now,
                     Receive::new(Protocol::Udp, from, self.backend_addr, &data)
@@ -192,37 +203,44 @@ impl Task<WhipInput, WhipOutput> for WhipTask {
                 )) {
                     log::error!("Error handling udp: {}", e);
                 }
-                self.pop_event_inner(now, true)
             }
             WhipInput::Bus { channel: _, kind } => {
                 if let Some(mid) = self.video_mid {
                     log::info!("Requesting keyframe for video mid: {:?}", mid);
+                    self.has_input = true;
                     self.rtc
                         .direct_api()
                         .stream_rx_by_mid(mid, None)
                         .expect("Should has video mid")
                         .request_keyframe(kind);
-                    self.pop_event_inner(now, true)
                 } else {
                     log::error!("No video mid for requesting keyframe");
-                    None
                 }
             }
         }
     }
 
-    /// Retrieves the next output event from the task.
-    fn pop_output(&mut self, now: Instant) -> Option<WhipOutput> {
-        self.pop_event_inner(now, false)
-    }
-
-    fn shutdown(&mut self, now: Instant) -> Option<WhipOutput> {
+    fn on_shutdown(&mut self, now: Instant) {
+        self.has_input = true;
         self.rtc.disconnect();
         self.output
             .push_back(WhipOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::PublishVideo(self.channel_id),
             )));
         self.output.push_back(WhipOutput::Destroy);
-        self.pop_event_inner(now, true)
+    }
+}
+
+impl TaskSwitcherChild<WhipOutput> for WhipTask {
+    type Time = Instant;
+
+    /// Retrieves the next output event from the task.
+    fn pop_output(&mut self, now: Instant) -> Option<WhipOutput> {
+        if self.has_input {
+            self.has_input = false;
+            self.pop_event_inner(now, true)
+        } else {
+            self.pop_event_inner(now, false)
+        }
     }
 }

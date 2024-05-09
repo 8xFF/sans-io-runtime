@@ -9,7 +9,8 @@ use std::{
 
 use sans_io_runtime::{
     backend::{BackendIncoming, BackendOutgoing, PollBackend},
-    group_owner_type, Buffer, Controller, ErrorDebugger2, Task, TaskGroup, WorkerInner,
+    collections::DynamicDeque,
+    group_owner_type, Buffer, Controller, Task, TaskGroup, TaskSwitcherChild, WorkerInner,
     WorkerInnerInput, WorkerInnerOutput,
 };
 
@@ -37,35 +38,29 @@ struct EchoTask {
     cfg: EchoTaskCfg,
     local_addr: SocketAddr,
     local_backend_slot: usize,
-    output: heapless::Deque<EchoTaskOutput, 16>,
+    output: DynamicDeque<EchoTaskOutput, 16>,
 }
 
 impl EchoTask {
     pub fn new(cfg: EchoTaskCfg) -> Self {
         log::info!("Create new echo client task in addr {}", cfg.dest);
-        let mut output = heapless::Deque::new();
-        output
-            .push_back(EchoTaskOutput::Net(BackendOutgoing::UdpListen {
-                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-                reuse: false,
-            }))
-            .print_err2("should not hapended");
         Self {
             count: 0,
             cfg,
             local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             local_backend_slot: 0,
-            output,
+            output: DynamicDeque::from([EchoTaskOutput::Net(BackendOutgoing::UdpListen {
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                reuse: false,
+            })]),
         }
     }
 }
 
 impl Task<BackendIncoming, EchoTaskOutput> for EchoTask {
-    fn on_tick(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
-        self.output.pop_front()
-    }
+    fn on_tick(&mut self, _now: Instant) {}
 
-    fn on_event(&mut self, _now: Instant, input: BackendIncoming) -> Option<EchoTaskOutput> {
+    fn on_event(&mut self, _now: Instant, input: BackendIncoming) {
         match input {
             BackendIncoming::UdpListenResult { bind, result } => {
                 log::info!("UdpListenResult: {} {:?}", bind, result);
@@ -78,43 +73,40 @@ impl Task<BackendIncoming, EchoTaskOutput> for EchoTask {
                                 slot: self.local_backend_slot,
                                 to: self.cfg.dest,
                                 data: Buffer::from([0; 1000].to_vec()),
-                            }))
-                            .print_err2("Should push ok");
+                            }));
                     }
                 }
-                self.output.pop_front()
             }
             BackendIncoming::UdpPacket { from, slot, data } => {
                 self.count += 1;
                 if self.count >= self.cfg.count {
                     log::info!("EchoTask done");
-                    Some(EchoTaskOutput::Destroy)
+                    self.output.push_back(EchoTaskOutput::Destroy);
                 } else {
-                    Some(EchoTaskOutput::Net(BackendOutgoing::UdpPacket {
-                        slot,
-                        to: from,
-                        data,
-                    }))
+                    self.output
+                        .push_back(EchoTaskOutput::Net(BackendOutgoing::UdpPacket {
+                            slot,
+                            to: from,
+                            data,
+                        }));
                 }
             }
-            _ => None,
         }
     }
 
-    fn pop_output(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
-        self.output.pop_front()
-    }
-
-    fn shutdown(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
+    fn on_shutdown(&mut self, _now: Instant) {
         log::info!("EchoTask shutdown");
         self.output
             .push_back(EchoTaskOutput::Net(BackendOutgoing::UdpUnlisten {
                 slot: self.local_backend_slot,
-            }))
-            .print_err2("should not hapended");
-        self.output
-            .push_back(EchoTaskOutput::Destroy)
-            .print_err2("should not hapended");
+            }));
+        self.output.push_back(EchoTaskOutput::Destroy);
+    }
+}
+
+impl TaskSwitcherChild<EchoTaskOutput> for EchoTask {
+    type Time = Instant;
+    fn pop_output(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
         self.output.pop_front()
     }
 }
@@ -146,23 +138,18 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         self.tasks.add_task(EchoTask::new(cfg));
     }
 
-    fn on_tick(
-        &mut self,
-        now: Instant,
-    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
-        let (index, out) = self.tasks.on_tick(now)?;
-        self.convert_output(OwnerType(index), out)
+    fn on_tick(&mut self, now: Instant) {
+        self.tasks.on_tick(now);
     }
 
     fn on_event(
         &mut self,
         now: Instant,
         event: WorkerInnerInput<OwnerType, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
+    ) {
         match event {
             WorkerInnerInput::Net(owner, event) => {
-                let out = self.tasks.on_event(now, owner.index(), event)?;
-                self.convert_output(owner, out)
+                self.tasks.on_event(now, owner.index(), event);
             }
             _ => unreachable!(),
         }
@@ -176,12 +163,8 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         self.convert_output(OwnerType(index), out)
     }
 
-    fn shutdown(
-        &mut self,
-        now: Instant,
-    ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
-        let (index, out) = self.tasks.shutdown(now)?;
-        self.convert_output(OwnerType(index), out)
+    fn on_shutdown(&mut self, now: Instant) {
+        self.tasks.on_shutdown(now);
     }
 }
 

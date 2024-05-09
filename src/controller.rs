@@ -98,6 +98,7 @@ impl<
                     );
                 log::info!("Worker {worker_index} started");
                 tx.send(()).expect("Should send start signal");
+                worker.init();
                 loop {
                     worker.process();
                 }

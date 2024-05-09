@@ -32,7 +32,17 @@ impl BufferInner {
         }
     }
 
-    pub fn allocate_more(&mut self, more: usize) {
+    pub fn allocate_front(&mut self, more: usize) {
+        match self {
+            Self::Vec(v) => {
+                let mut vec2 = vec![0; more + v.len()];
+                vec2[more..].copy_from_slice(v);
+                let _ = std::mem::replace(v, vec2);
+            }
+        }
+    }
+
+    pub fn allocate_back(&mut self, more: usize) {
         match self {
             Self::Vec(v) => {
                 v.append(&mut vec![0; more]);
@@ -176,9 +186,30 @@ impl Buffer {
         }
     }
 
+    /// Getting front buffer for writing
+    pub fn front_mut(&mut self, len: usize) -> &mut [u8] {
+        self.ensure_front(len);
+        &mut self.buf.deref_mut()[self.range.start - len..self.range.start]
+    }
+
     /// Getting remain buffer for writing, this useful when using with UDP Socket
     pub fn remain_mut(&mut self) -> &mut [u8] {
         &mut self.buf.deref_mut()[self.range.start..]
+    }
+
+    /// Getting back buffer for writing
+    pub fn back_mut(&mut self, len: usize) -> &mut [u8] {
+        self.ensure_back(len);
+        &mut self.buf.deref_mut()[self.range.end..self.range.end + len]
+    }
+
+    /// Reverse the front for at least `len` bytes at front
+    pub fn ensure_front(&mut self, more: usize) {
+        if self.range.start < more {
+            self.buf.allocate_front(more - self.range.start);
+            self.range.start += more;
+            self.range.end += more;
+        }
     }
 
     /// Reverse the buffer for at least `len` bytes at back.
@@ -186,7 +217,7 @@ impl Buffer {
         assert!(self.buf.len() >= self.range.end);
         let remain = self.buf.len() - self.range.end;
         if remain < more {
-            self.buf.allocate_more(more - remain);
+            self.buf.allocate_back(more - remain);
         }
     }
 
@@ -197,6 +228,12 @@ impl Buffer {
         } else {
             None
         }
+    }
+
+    pub fn push_front(&mut self, data: &[u8]) {
+        self.ensure_front(data.len());
+        self.range.start -= data.len();
+        self.buf.deref_mut()[self.range.start..self.range.start + data.len()].copy_from_slice(data);
     }
 
     pub fn push_back(&mut self, data: &[u8]) {
@@ -323,13 +360,29 @@ mod tests {
     }
 
     #[test]
-    fn buffer_expend() {
-        let mut buf = BufferInner::Vec(vec![1, 2, 3, 4]);
-        buf.allocate_more(10);
-        assert_eq!(buf.len(), 14);
+    fn buffer_expand() {
+        let mut buf = Buffer::from(vec![1, 2, 3, 4]);
+        buf.ensure_front(2);
+        buf.ensure_back(2);
+        assert_eq!(buf.len(), 4);
+        assert_eq!(buf.front_mut(2), &[0, 0]);
+        assert_eq!(buf.back_mut(2), &[0, 0]);
 
+        buf.push_front(&[8, 8]);
+        buf.push_back(&[9, 9]);
+
+        assert_eq!(buf.deref(), &[8, 8, 1, 2, 3, 4, 9, 9]);
+    }
+
+    #[test]
+    fn buffer_inner_expand() {
         let mut buf = BufferInner::from(vec![1, 2, 3, 4]);
-        buf.allocate_more(10);
-        assert_eq!(buf.len(), 14);
+        buf.allocate_front(2);
+        assert_eq!(buf.deref(), &[0, 0, 1, 2, 3, 4]);
+
+        let mut buf = BufferInner::Vec(vec![1, 2, 3, 4]);
+        buf.allocate_back(2);
+        assert_eq!(buf.len(), 6);
+        assert_eq!(buf.deref(), &[1, 2, 3, 4, 0, 0]);
     }
 }

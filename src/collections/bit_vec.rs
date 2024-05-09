@@ -20,6 +20,10 @@ impl BitVec {
         self.len = len;
     }
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     pub fn get_bit(&self, index: usize) -> bool {
         assert!(self.len > index, "index out of bounds");
         let byte_index = index / 8;
