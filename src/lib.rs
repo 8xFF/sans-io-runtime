@@ -145,11 +145,13 @@ macro_rules! group_task {
                 while let Some(index) = self.switcher.current() {
                     let slot = self.tasks.get_mut(index);
                     if let Some(Some(slot)) = slot {
-                        if let Some(out) = self.switcher.process(slot.pop_output(now)) {
+                        if let Some(out) = slot.pop_output(now) {
                             return Some((index, out));
+                        } else {
+                            self.switcher.finished(index);
                         }
                     } else {
-                        self.switcher.process(None::<()>);
+                        self.switcher.finished(index);
                     }
                 }
                 None

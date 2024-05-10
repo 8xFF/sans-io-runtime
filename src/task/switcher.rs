@@ -101,7 +101,7 @@ impl TaskSwitcher {
         self.bits.first_set_index()
     }
 
-    pub(crate) fn flag_all(&mut self) {
+    pub fn flag_all(&mut self) {
         self.bits.set_all(true);
     }
 
