@@ -61,7 +61,7 @@ macro_rules! group_owner_type {
             fn build(index: usize) -> Self {
                 Self(index)
             }
-            fn index(&self) -> usize {
+            pub fn index(&self) -> usize {
                 self.0
             }
         }
