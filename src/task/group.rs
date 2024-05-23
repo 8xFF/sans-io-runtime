@@ -30,6 +30,11 @@ impl<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> TaskGroup<In, Out, T, S
         tasks
     }
 
+    /// Check if we have task with index
+    pub fn has_task(&self, index: usize) -> bool {
+        matches!(self.tasks.get(index), Some(Some(_)))
+    }
+
     /// Adds a task to the group.
     pub fn add_task(&mut self, task: T) -> usize {
         for (index, slot) in self.tasks.iter_mut().enumerate() {
