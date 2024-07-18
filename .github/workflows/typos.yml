@@ -2,9 +2,9 @@ name: Typos
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,4 +17,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check spelling issues
-        uses: crate-ci/typos@v1.19.0
+        uses: crate-ci/typos@v1
