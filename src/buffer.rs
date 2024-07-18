@@ -157,10 +157,7 @@ impl Buffer {
     /// working with networking protocol. Sometime we need to append data to front of buffer
     /// the left-padding with avoiding vector need to re-create
     pub fn new(left: usize, main: usize) -> Buffer {
-        let mut v = Vec::with_capacity(left + main);
-        unsafe {
-            v.set_len(left + main);
-        }
+        let v = vec![0; left + main];
         Buffer {
             buf: v.into(),
             range: (left..left),

@@ -24,6 +24,10 @@ impl BitVec {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn get_bit(&self, index: usize) -> bool {
         assert!(
             self.len > index,

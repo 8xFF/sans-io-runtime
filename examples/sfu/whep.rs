@@ -250,7 +250,7 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
         }
     }
 
-    fn on_shutdown(&mut self, now: Instant) {
+    fn on_shutdown(&mut self, _now: Instant) {
         self.has_input = true;
         self.rtc.disconnect();
         self.output
