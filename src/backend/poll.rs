@@ -250,13 +250,9 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
             }
             #[cfg(feature = "udp")]
             BackendOutgoing::UdpPacket { to, slot, data } => {
-                if let Some(socket) = self.sockets.get_mut(slot) {
-                    if let Some(SocketType::Udp(socket, _, _)) = socket {
-                        if let Err(e) = socket.send_to(&data, to) {
-                            log::error!("Poll send_to error {:?}", e);
-                        }
-                    } else {
-                        log::error!("Poll send_to error: no socket for {}", slot);
+                if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
+                    if let Err(e) = socket.send_to(&data, to) {
+                        log::error!("Poll send_to error {:?}", e);
                     }
                 } else {
                     log::error!("Poll send_to error: no socket for {}", slot);
@@ -264,15 +260,11 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
             }
             #[cfg(feature = "udp")]
             BackendOutgoing::UdpPackets { to, slot, data } => {
-                if let Some(socket) = self.sockets.get_mut(slot) {
-                    if let Some(SocketType::Udp(socket, _, _)) = socket {
-                        for dest in to {
-                            if let Err(e) = socket.send_to(&data, dest) {
-                                log::error!("Poll send_to error {:?}", e);
-                            }
+                if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
+                    for dest in to {
+                        if let Err(e) = socket.send_to(&data, dest) {
+                            log::error!("Poll send_to error {:?}", e);
                         }
-                    } else {
-                        log::error!("Poll send_to error: no socket for {}", slot);
                     }
                 } else {
                     log::error!("Poll send_to error: no socket for {}", slot);
