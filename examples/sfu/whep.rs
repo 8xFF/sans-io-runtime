@@ -1,8 +1,7 @@
 use std::{net::SocketAddr, time::Instant};
 
 use sans_io_runtime::{
-    bus::BusEvent, collections::DynamicDeque, Buffer, NetIncoming, NetOutgoing, Task, TaskInput,
-    TaskOutput,
+    collections::DynamicDeque, return_if_none, Buffer, BusChannelControl, Task, TaskSwitcherChild,
 };
 use str0m::{
     change::{DtlsCert, SdpOffer},
@@ -12,7 +11,7 @@ use str0m::{
     Candidate, Event as Str0mEvent, IceConnectionState, Input, Output, Rtc,
 };
 
-use super::{ChannelId, ExtIn, ExtOut, SfuEvent};
+use super::{ChannelId, TrackMedia};
 
 pub struct WhepTaskBuildResult {
     pub task: WhepTask,
@@ -20,20 +19,36 @@ pub struct WhepTaskBuildResult {
     pub sdp: String,
 }
 
+pub enum WhepInput {
+    UdpPacket {
+        from: SocketAddr,
+        data: Buffer,
+    },
+    Bus {
+        channel: ChannelId,
+        media: TrackMedia,
+    },
+}
+
+pub enum WhepOutput {
+    UdpPacket { to: SocketAddr, data: Buffer },
+    Bus(BusChannelControl<ChannelId, KeyframeRequestKind>),
+    Destroy,
+}
+
 pub struct WhepTask {
-    backend_slot: usize,
     backend_addr: SocketAddr,
     timeout: Option<Instant>,
     rtc: Rtc,
     audio_mid: Option<Mid>,
     video_mid: Option<Mid>,
     channel_id: u64,
-    output: DynamicDeque<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>, 16>,
+    output: DynamicDeque<WhepOutput, 16>,
+    has_input: bool,
 }
 
 impl WhepTask {
     pub fn build(
-        backend_slot: usize,
         backend_addr: SocketAddr,
         dtls_cert: DtlsCert,
         channel: u64,
@@ -66,13 +81,13 @@ impl WhepTask {
             .expect("Should accept offer");
         let instance = Self {
             backend_addr,
-            backend_slot,
             timeout: None,
             rtc,
             audio_mid: None,
             video_mid: None,
             channel_id: channel,
             output: DynamicDeque::default(),
+            has_input: false,
         };
 
         Ok(WhepTaskBuildResult {
@@ -82,11 +97,7 @@ impl WhepTask {
         })
     }
 
-    fn pop_event_inner(
-        &mut self,
-        now: Instant,
-        has_input: bool,
-    ) -> Option<TaskOutput<'static, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    fn pop_event_inner(&mut self, now: Instant, has_input: bool) -> Option<WhepOutput> {
         if let Some(o) = self.output.pop_front() {
             return Some(o);
         }
@@ -107,28 +118,27 @@ impl WhepTask {
                     return None;
                 }
                 Output::Transmit(send) => {
-                    return Some(TaskOutput::Net(NetOutgoing::UdpPacket {
-                        slot: self.backend_slot,
+                    return Some(WhepOutput::UdpPacket {
                         to: send.destination,
-                        data: Buffer::Vec(send.contents.into()),
-                    }));
+                        data: Buffer::from(send.contents.to_vec()),
+                    });
                 }
                 Output::Event(e) => match e {
                     Str0mEvent::Connected => {
                         log::info!("WhepServerTask connected");
                         self.output
-                            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelSubscribe(
+                            .push_back(WhepOutput::Bus(BusChannelControl::Subscribe(
                                 ChannelId::ConsumeAudio(self.channel_id),
                             )));
                         self.output
-                            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelSubscribe(
+                            .push_back(WhepOutput::Bus(BusChannelControl::Subscribe(
                                 ChannelId::ConsumeVideo(self.channel_id),
                             )));
                         self.output
-                            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelPublish(
+                            .push_back(WhepOutput::Bus(BusChannelControl::Publish(
                                 ChannelId::PublishVideo(self.channel_id),
                                 true,
-                                SfuEvent::RequestKeyFrame(KeyframeRequestKind::Pli),
+                                KeyframeRequestKind::Pli,
                             )));
                         return self.output.pop_front();
                     }
@@ -142,26 +152,24 @@ impl WhepTask {
                     }
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
-                            self.output.push_back_safe(TaskOutput::Bus(
-                                BusEvent::ChannelUnsubscribe(ChannelId::ConsumeAudio(
-                                    self.channel_id,
-                                )),
-                            ));
-                            self.output.push_back_safe(TaskOutput::Bus(
-                                BusEvent::ChannelUnsubscribe(ChannelId::ConsumeVideo(
-                                    self.channel_id,
-                                )),
-                            ));
-                            self.output.push_back_safe(TaskOutput::Destroy);
+                            self.output
+                                .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
+                                    ChannelId::ConsumeAudio(self.channel_id),
+                                )));
+                            self.output
+                                .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
+                                    ChannelId::ConsumeVideo(self.channel_id),
+                                )));
+                            self.output.push_back(WhepOutput::Destroy);
                             return self.output.pop_front();
                         }
                         _ => {}
                     },
                     Str0mEvent::KeyframeRequest(req) => {
-                        return Some(TaskOutput::Bus(BusEvent::ChannelPublish(
+                        return Some(WhepOutput::Bus(BusChannelControl::Publish(
                             ChannelId::PublishVideo(self.channel_id),
                             false,
-                            SfuEvent::RequestKeyFrame(req.kind).into(),
+                            req.kind,
                         )));
                     }
                     _ => {}
@@ -173,126 +181,99 @@ impl WhepTask {
     }
 }
 
-impl Task<ExtIn, ExtOut, ChannelId, ChannelId, SfuEvent, SfuEvent> for WhepTask {
-    /// The type identifier for the task.
-    const TYPE: u16 = 1;
-
+impl Task<WhepInput, WhepOutput> for WhepTask {
     /// Called on each tick of the task.
-    fn on_tick<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
-        let timeout = self.timeout?;
+    fn on_tick(&mut self, now: Instant) {
+        let timeout = return_if_none!(self.timeout);
         if now < timeout {
-            return None;
+            return;
         }
 
+        self.has_input = true;
         if let Err(e) = self.rtc.handle_input(Input::Timeout(now)) {
             log::error!("Error handling timeout: {}", e);
         }
         log::trace!("clear timeout after handled");
         self.timeout = None;
-        self.pop_event_inner(now, true)
     }
 
     /// Called when an input event is received for the task.
-    fn on_event<'a>(
-        &mut self,
-        now: Instant,
-        input: TaskInput<'a, ExtIn, ChannelId, SfuEvent>,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    fn on_event(&mut self, now: Instant, input: WhepInput) {
         match input {
-            TaskInput::Net(event) => match event {
-                NetIncoming::UdpPacket {
-                    from,
-                    slot: _,
-                    data,
-                } => {
-                    if let Err(e) = self.rtc.handle_input(Input::Receive(
-                        now,
-                        Receive::new(Protocol::Udp, from, self.backend_addr, data)
-                            .expect("Should parse udp"),
-                    )) {
-                        log::error!("Error handling udp: {}", e);
-                    }
-                    self.timeout = None;
-                    self.pop_event_inner(now, true)
+            WhepInput::UdpPacket { from, data } => {
+                self.has_input = true;
+                if let Err(e) = self.rtc.handle_input(Input::Receive(
+                    now,
+                    Receive::new(Protocol::Udp, from, self.backend_addr, &data)
+                        .expect("Should parse udp"),
+                )) {
+                    log::error!("Error handling udp: {}", e);
                 }
-                NetIncoming::UdpListenResult { .. } => {
-                    panic!("Unexpected UdpListenResult");
-                }
-                _ => None,
-            },
-            TaskInput::Bus(channel, event) => match event {
-                SfuEvent::RequestKeyFrame(_kind) => {
-                    panic!("RequestKeyFrame event should not be sent to WhepTask");
-                }
-                SfuEvent::Media(media) => {
-                    let (mid, nackable) = if matches!(channel, ChannelId::ConsumeAudio(..)) {
-                        (self.audio_mid, false)
-                    } else {
-                        (self.video_mid, true)
-                    };
+                self.timeout = None;
+            }
+            WhepInput::Bus { channel, media } => {
+                let (mid, nackable) = if matches!(channel, ChannelId::ConsumeAudio(..)) {
+                    (self.audio_mid, false)
+                } else {
+                    (self.video_mid, true)
+                };
 
-                    if let Some(mid) = mid {
-                        if let Some(stream) = self.rtc.direct_api().stream_tx_by_mid(mid, None) {
-                            log::debug!(
-                                "Write rtp for mid: {:?} {} {} {}",
-                                mid,
-                                media.seq_no,
-                                media.header.timestamp,
-                                media.payload.len()
-                            );
-                            if let Err(e) = stream.write_rtp(
-                                media.header.payload_type,
-                                media.seq_no,
-                                media.header.timestamp,
-                                media.timestamp,
-                                media.header.marker,
-                                media.header.ext_vals,
-                                nackable,
-                                media.payload,
-                            ) {
-                                log::error!("Error writing rtp: {}", e);
-                            }
-                            log::trace!("clear timeout with media");
-                            self.timeout = None;
-                            self.pop_event_inner(now, true)
-                        } else {
-                            None
+                if let Some(mid) = mid {
+                    self.has_input = true;
+                    if let Some(stream) = self.rtc.direct_api().stream_tx_by_mid(mid, None) {
+                        log::trace!(
+                            "Write rtp for mid: {:?} {} {} {}",
+                            mid,
+                            media.header.payload_type,
+                            media.header.sequence_number,
+                            media.payload.len()
+                        );
+                        if let Err(e) = stream.write_rtp(
+                            media.header.payload_type,
+                            media.seq_no,
+                            media.header.timestamp,
+                            media.timestamp,
+                            media.header.marker,
+                            media.header.ext_vals,
+                            nackable,
+                            media.payload,
+                        ) {
+                            log::error!("Error writing rtp: {}", e);
                         }
-                    } else {
-                        log::error!("No mid for media {}", media.header.payload_type);
-                        None
+                        log::trace!("clear timeout with media");
+                        self.timeout = None;
                     }
+                } else {
+                    log::error!("No mid for media {}", media.header.payload_type);
                 }
-            },
-            TaskInput::Ext(_) => None,
+            }
         }
     }
 
-    /// Retrieves the next output event from the task.
-    fn pop_output<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
-        self.pop_event_inner(now, false)
-    }
-
-    fn shutdown<'a>(
-        &mut self,
-        now: Instant,
-    ) -> Option<TaskOutput<'a, ExtOut, ChannelId, ChannelId, SfuEvent>> {
+    fn on_shutdown(&mut self, now: Instant) {
+        self.has_input = true;
         self.rtc.disconnect();
         self.output
-            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(
+            .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeAudio(self.channel_id),
             )));
         self.output
-            .push_back_safe(TaskOutput::Bus(BusEvent::ChannelUnsubscribe(
+            .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeVideo(self.channel_id),
             )));
-        self.output.push_back_safe(TaskOutput::Destroy);
-        self.pop_event_inner(now, true)
+        self.output.push_back(WhepOutput::Destroy);
+    }
+}
+
+impl TaskSwitcherChild<WhepOutput> for WhepTask {
+    type Time = Instant;
+    /// Retrieves the next output event from the task.
+    fn pop_output(&mut self, now: Instant) -> Option<WhepOutput> {
+        if self.has_input {
+            self.has_input = false;
+            self.pop_event_inner(now, true)
+        } else {
+            self.pop_event_inner(now, false)
+        }
     }
 }

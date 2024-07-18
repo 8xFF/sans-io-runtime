@@ -14,21 +14,33 @@ impl BitVec {
     }
 
     pub fn set_len(&mut self, len: usize) {
-        if self.len > self.bytes.len() * 8 {
+        if len > self.bytes.len() * 8 {
             self.bytes.resize(len / 8 + 1, 0);
         }
         self.len = len;
     }
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     pub fn get_bit(&self, index: usize) -> bool {
-        assert!(self.len > index, "index out of bounds");
+        assert!(
+            self.len > index,
+            "index out of bounds {index} vs bytes {}",
+            self.bytes.len()
+        );
         let byte_index = index / 8;
         let bit_index = index % 8;
         self.bytes[byte_index] & (1 << bit_index) != 0
     }
 
     pub fn set_bit(&mut self, index: usize, value: bool) {
-        assert!(self.len > index, "index out of bounds");
+        assert!(
+            self.len > index,
+            "index out of bounds {index} vs bytes {}",
+            self.bytes.len()
+        );
         let byte_index = index / 8;
         let bit_index = index % 8;
         if value {
@@ -82,5 +94,14 @@ mod test {
         assert_eq!(bit_vec.first_set_index(), Some(0));
         bit_vec.set_all(false);
         assert_eq!(bit_vec.first_set_index(), None);
+    }
+
+    #[test]
+    fn extend_bytes() {
+        let mut bit_vec = super::BitVec::news(0);
+        bit_vec.set_len(9); //to new byte
+        assert_eq!(bit_vec.get_bit(8), false);
+        bit_vec.set_bit(8, true);
+        assert_eq!(bit_vec.get_bit(8), true);
     }
 }

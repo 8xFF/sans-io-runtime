@@ -1,6 +1,5 @@
-use faster_stun::attribute::*;
-use faster_stun::*;
 use std::{collections::HashMap, fmt::Debug, hash::Hash, net::SocketAddr};
+use str0m::ice::StunMessage;
 
 #[derive(Debug)]
 pub struct SharedUdpPort<Task> {
@@ -62,7 +61,8 @@ impl<Task: Debug + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
             return Some(*task);
         }
 
-        let stun_username = Self::get_stun_username(buf)?;
+        let msg = StunMessage::parse(buf).ok()?;
+        let (stun_username, _other) = msg.split_username()?;
         log::warn!(
             "Received a stun packet from an unknown remote: {:?}, username {}",
             remote,
@@ -73,11 +73,5 @@ impl<Task: Debug + Clone + Copy + Hash + PartialEq + Eq> SharedUdpPort<Task> {
         self.task_remotes.insert(remote, *task);
         self.task_remotes_map.entry(*task).or_default().push(remote);
         Some(*task)
-    }
-
-    fn get_stun_username(buf: &[u8]) -> Option<&str> {
-        let mut attributes = Vec::new();
-        let message = MessageReader::decode(buf, &mut attributes).ok()?;
-        message.get::<UserName>().map(|u| u.split(':').next())?
     }
 }

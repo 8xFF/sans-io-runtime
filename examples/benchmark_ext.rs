@@ -2,14 +2,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sans_io_runtime::backend::PollBackend;
-use sans_io_runtime::Owner;
-use sans_io_runtime::{Controller, WorkerInner, WorkerInnerInput, WorkerInnerOutput};
+use sans_io_runtime::backend::PollingBackend;
+use sans_io_runtime::collections::DynamicDeque;
+use sans_io_runtime::{
+    group_owner_type, Controller, WorkerInner, WorkerInnerInput, WorkerInnerOutput,
+};
+
+group_owner_type!(SimpleOwner);
 
 #[derive(Clone)]
 struct ExtIn {
     ts: Instant,
-    _data: [u8; 1500],
+    _data: [u8; 10],
 }
 type ExtOut = ExtIn;
 type ChannelId = ();
@@ -22,13 +26,15 @@ struct EchoWorkerCfg {}
 struct EchoWorker {
     worker: u16,
     shutdown: bool,
+    queue: DynamicDeque<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>, 16>,
 }
 
-impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
+impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     fn build(worker: u16, _cfg: EchoWorkerCfg) -> Self {
         Self {
             worker,
             shutdown: false,
+            queue: Default::default(),
         }
     }
 
@@ -45,47 +51,39 @@ impl WorkerInner<ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorker {
     }
 
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
-    fn on_tick<'a>(
+    fn on_tick(&mut self, _now: Instant) {}
+    fn on_event(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        None
-    }
-    fn on_event<'a>(
-        &mut self,
-        _now: Instant,
-        event: WorkerInnerInput<'a, ExtIn, ChannelId, Event>,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        match event {
-            WorkerInnerInput::Ext(ext) => Some(WorkerInnerOutput::Ext(true, ext)),
-            _ => None,
+        event: WorkerInnerInput<SimpleOwner, ExtIn, ChannelId, Event>,
+    ) {
+        if let WorkerInnerInput::Ext(ext) = event {
+            self.queue.push_back(WorkerInnerOutput::Ext(true, ext));
         }
     }
 
-    fn pop_output<'a>(
+    fn pop_output(
         &mut self,
         _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        None
+    ) -> Option<WorkerInnerOutput<SimpleOwner, ExtOut, ChannelId, Event, SCfg>> {
+        self.queue.pop_front()
     }
 
-    fn shutdown<'a>(
-        &mut self,
-        _now: Instant,
-    ) -> Option<WorkerInnerOutput<'a, ExtOut, ChannelId, Event, SCfg>> {
-        if self.shutdown {
-            return None;
-        }
+    fn on_shutdown(&mut self, _now: Instant) {
         log::info!("EchoServer {} shutdown", self.worker);
         self.shutdown = true;
-        None
     }
 }
 
 fn main() {
     env_logger::init();
-    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 4096>::default();
-    controller.add_worker::<_, EchoWorker, PollBackend<16, 1024>>(
+    let mut controller = Controller::<ExtIn, ExtOut, SCfg, ChannelId, Event, 512>::default();
+    controller.add_worker::<SimpleOwner, _, EchoWorker, PollingBackend<_, 16, 16>>(
+        Duration::from_secs(1),
+        EchoWorkerCfg {},
+        None,
+    );
+    controller.add_worker::<SimpleOwner, _, EchoWorker, PollingBackend<_, 16, 16>>(
         Duration::from_secs(1),
         EchoWorkerCfg {},
         None,
@@ -94,12 +92,12 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
         .expect("Should register hook");
 
-    for _ in 0..4000 {
+    for _ in 0..400 {
         controller.send_to(
-            Owner::worker(0),
+            0,
             ExtIn {
                 ts: Instant::now(),
-                _data: [0; 1500],
+                _data: [0; 10],
             },
         );
     }
@@ -129,7 +127,7 @@ fn main() {
             }
             //log::info!("received after: {}", out.elapsed().as_millis());
             out.ts = Instant::now();
-            controller.send_to(Owner::worker(0), out);
+            controller.send_to_best(out);
         }
     }
 

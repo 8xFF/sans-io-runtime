@@ -21,9 +21,9 @@
 /// use sans_io_runtime::collections::DynamicVec;
 ///
 /// let mut vec: DynamicVec<u32, 10> = DynamicVec::default();
-/// vec.push(true, 1).unwrap();
-/// vec.push(true, 2).unwrap();
-/// vec.push(false, 3).unwrap();
+/// vec.push(1);
+/// vec.push(2);
+/// vec.push_stack(3).unwrap();
 /// ```
 ///
 /// Accessing elements in the `DynamicVec`:
@@ -32,9 +32,9 @@
 /// use sans_io_runtime::collections::DynamicVec;
 ///
 /// let mut vec: DynamicVec<u32, 10> = DynamicVec::default();
-/// vec.push(true, 1).unwrap();
-/// vec.push(true, 2).unwrap();
-/// vec.push(false, 3).unwrap();
+/// vec.push(1);
+/// vec.push(2);
+/// vec.push_stack(3).unwrap();
 ///
 /// assert_eq!(vec.get(0), Some(&1));
 /// assert_eq!(vec.get(1), Some(&2));
@@ -60,7 +60,7 @@ impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
     pub fn from<const SIZE: usize>(prepare: [T; SIZE]) -> Self {
         let mut instance = DynamicVec::<T, STACK_SIZE>::default();
         for item in prepare {
-            instance.push_safe(item);
+            instance.push(item);
         }
         instance
     }
@@ -100,23 +100,13 @@ impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
         }
     }
 
-    /// Pushes an element to the vector. If safe is true, it will fallback to heap if stack full.
-    pub fn push(&mut self, safe: bool, value: T) -> Result<(), T> {
-        if safe {
-            self.push_safe(value);
-            Ok(())
-        } else {
-            self.push_stack(value)
-        }
-    }
-
     /// Push an element to the stack of the vector.
     pub fn push_stack(&mut self, value: T) -> Result<(), T> {
         self.stack.push(value)
     }
 
     /// Push an element to the stack or the heap of the vector.
-    pub fn push_safe(&mut self, value: T) {
+    pub fn push(&mut self, value: T) {
         if let Err(value) = self.stack.push(value) {
             self.heap.push(value);
         }
@@ -174,10 +164,10 @@ mod tests {
     #[test]
     fn test_push() {
         let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
-        assert_eq!(vec.push(true, 1), Ok(()));
-        assert_eq!(vec.push(true, 2), Ok(()));
-        assert_eq!(vec.push(true, 3), Ok(()));
-        assert_eq!(vec.push(false, 4), Err(4));
+        vec.push(1);
+        vec.push(2);
+        vec.push(3);
+        assert_eq!(vec.push_stack(4), Err(4));
         assert_eq!(vec.len(), 3);
         assert_eq!(vec.get(0), Some(&1));
         assert_eq!(vec.get(1), Some(&2));
@@ -198,9 +188,9 @@ mod tests {
     #[test]
     fn test_push_safe() {
         let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
-        vec.push_safe(1);
-        vec.push_safe(2);
-        vec.push_safe(3);
+        vec.push(1);
+        vec.push(2);
+        vec.push(3);
         assert_eq!(vec.len(), 3);
         assert_eq!(vec.get(0), Some(&1));
         assert_eq!(vec.get_mut_or_panic(0), &1);
@@ -213,8 +203,8 @@ mod tests {
     #[test]
     fn test_pop() {
         let mut vec: DynamicVec<u32, 2> = DynamicVec::default();
-        vec.push_safe(1);
-        vec.push_safe(2);
+        vec.push(1);
+        vec.push(2);
         assert_eq!(vec.pop(), Some(2));
         assert_eq!(vec.pop(), Some(1));
         assert_eq!(vec.pop(), None);

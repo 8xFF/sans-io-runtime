@@ -9,8 +9,9 @@ edition = "2021"
 derive_more = "0.99"
 heapless = "0.8"
 log = "0.4"
-mio = { version = "0.8", features = ["os-poll", "net"], optional = true }
 parking_lot = "0.12"
+convert-enum = "0.1.0"
+num_enum = "0.7.2"
 polling = { version = "3.5", optional = true }
 socket2 = { version = "0.5", optional = true, features = ["all"] }
 tun = { version = "0.6", optional = true }
@@ -19,15 +20,12 @@ tun = { version = "0.6", optional = true }
 mockall = "0.12.1"
 env_logger = "0.11"
 tiny_http = "0.12"
-str0m = "0.5"
-faster-stun = "1.0.2"
-convert-enum = "0.1.0"
+str0m = { git = "https://github.com/algesten/str0m.git", rev = "d826257b06ac4a5562301eaa1fbac4ab3a6c04a2" }
 signal-hook = "0.3.17"
 
 [features]
-default = ["poll-backend", "polling-backend", "udp", "tun-tap"]
-tun-tap = ["tun", "mio/os-ext"]
+default = ["poll-backend", "polling-backend", "udp"]
+tun-tap = ["tun"]
 udp = []
-mio-backend = ["mio", "socket2"]
 polling-backend = ["polling", "socket2"]
 poll-backend = ["socket2"]
