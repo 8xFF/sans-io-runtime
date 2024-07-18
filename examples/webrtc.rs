@@ -22,14 +22,14 @@ fn main() {
     controller.add_worker::<OwnerType, _, SfuWorker, PollingBackend<_, 128, 512>>(
         Duration::from_millis(100),
         ICfg {
-            udp_addr: "192.168.1.39:0".parse().unwrap(),
+            udp_addr: "127.0.0.1:0".parse().unwrap(),
         },
         None,
     );
     controller.add_worker::<OwnerType, _, SfuWorker, PollingBackend<_, 128, 512>>(
         Duration::from_millis(100),
         ICfg {
-            udp_addr: "192.168.1.39:0".parse().unwrap(),
+            udp_addr: "127.0.0.1:0".parse().unwrap(),
         },
         None,
     );

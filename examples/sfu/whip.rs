@@ -20,14 +20,8 @@ pub struct WhipTaskBuildResult {
 }
 
 pub enum WhipInput {
-    UdpPacket {
-        from: SocketAddr,
-        data: Buffer,
-    },
-    Bus {
-        channel: ChannelId,
-        kind: KeyframeRequestKind,
-    },
+    UdpPacket { from: SocketAddr, data: Buffer },
+    Bus { kind: KeyframeRequestKind },
 }
 
 pub enum WhipOutput {
@@ -204,7 +198,7 @@ impl Task<WhipInput, WhipOutput> for WhipTask {
                     log::error!("Error handling udp: {}", e);
                 }
             }
-            WhipInput::Bus { channel: _, kind } => {
+            WhipInput::Bus { kind } => {
                 if let Some(mid) = self.video_mid {
                     log::info!("Requesting keyframe for video mid: {:?}", mid);
                     self.has_input = true;
@@ -220,7 +214,7 @@ impl Task<WhipInput, WhipOutput> for WhipTask {
         }
     }
 
-    fn on_shutdown(&mut self, now: Instant) {
+    fn on_shutdown(&mut self, _now: Instant) {
         self.has_input = true;
         self.rtc.disconnect();
         self.output

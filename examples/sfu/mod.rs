@@ -13,7 +13,7 @@ use sans_io_runtime::{
 };
 use str0m::{
     change::DtlsCert,
-    media::{KeyframeRequestKind, MediaTime},
+    media::KeyframeRequestKind,
     rtp::{RtpHeader, RtpPacket, SeqNo},
 };
 
@@ -54,12 +54,6 @@ pub enum ChannelId {
 pub struct TrackMedia {
     /// Extended sequence number to avoid having to deal with ROC.
     pub seq_no: SeqNo,
-
-    /// Extended RTP time in the clock frequency of the codec. To avoid dealing with ROC.
-    ///
-    /// For a newly scheduled outgoing packet, the clock_rate is not correctly set until
-    /// we do the poll_output().
-    pub time: MediaTime,
 
     /// Parsed RTP header.
     pub header: RtpHeader,
@@ -122,9 +116,9 @@ impl SfuWorker {
     }
 
     fn process_req(&mut self, req: HttpRequest) {
-        match req.path.as_str() {
-            "/whip/endpoint" => self.connect_whip(req),
-            "/whep/endpoint" => self.connect_whep(req),
+        match (req.method.as_str(), req.path.as_str()) {
+            ("POST", "/whip/endpoint") => self.connect_whip(req),
+            ("POST", "/whep/endpoint") => self.connect_whep(req),
             _ => {
                 self.output.push_back(WorkerInnerOutput::Ext(
                     true,
@@ -391,7 +385,7 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
                     self.whip_group.input(&mut self.switcher).on_event(
                         now,
                         owner.index(),
-                        WhipInput::Bus { channel, kind },
+                        WhipInput::Bus { kind },
                     );
                 }
                 (OwnerType::Whep(owner), SfuEvent::Media(media)) => {
@@ -441,18 +435,11 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, SfuEvent, ICfg, SCfg> for 
 
 impl TrackMedia {
     pub fn from_raw(rtp: RtpPacket) -> Self {
-        let header = rtp.header;
-        let payload = rtp.payload;
-        let time = rtp.time;
-        let timestamp = rtp.timestamp;
-        let seq_no = rtp.seq_no;
-
         Self {
-            seq_no,
-            time,
-            header,
-            payload,
-            timestamp,
+            seq_no: rtp.seq_no,
+            header: rtp.header,
+            payload: rtp.payload,
+            timestamp: rtp.timestamp,
         }
     }
 }

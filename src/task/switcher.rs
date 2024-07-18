@@ -49,7 +49,7 @@ impl<Task, Out> TaskSwitcherBranch<Task, Out> {
         Self {
             task_type: tt.into(),
             task,
-            _tmp: PhantomData::default(),
+            _tmp: Default::default(),
         }
     }
 

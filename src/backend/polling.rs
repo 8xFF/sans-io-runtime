@@ -6,7 +6,6 @@ use std::{
         Arc,
     },
     time::Duration,
-    usize,
 };
 
 use polling::{Event, Events, PollMode, Poller};

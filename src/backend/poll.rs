@@ -39,7 +39,6 @@ use std::{
     net::{SocketAddr, UdpSocket},
     sync::Arc,
     time::Duration,
-    usize,
 };
 
 use crate::{
