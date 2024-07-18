@@ -331,13 +331,9 @@ impl<
             }
             #[cfg(feature = "tun-tap")]
             BackendOutgoing::TunPacket { slot, data } => {
-                if let Some(socket) = self.sockets.get_mut(slot) {
-                    if let Some(SocketType::Tun(fd, _)) = socket {
-                        if let Err(e) = fd.fd.write_all(&data) {
-                            log::error!("Poll write_all error {:?}", e);
-                        }
-                    } else {
-                        log::error!("Poll send_to error: no tun for {}", slot);
+                if let Some(Some(SocketType::Tun(fd, _))) = self.sockets.get_mut(slot) {
+                    if let Err(e) = fd.fd.write_all(&data) {
+                        log::error!("Poll write_all error {:?}", e);
                     }
                 } else {
                     log::error!("Poll send_to error: no tun for {}", slot);

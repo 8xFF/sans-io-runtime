@@ -83,7 +83,7 @@ pub enum WorkerControlOut<Ext, SCfg> {
 #[derive(Debug, Default)]
 pub struct WorkerStats {
     pub tasks: usize,
-    pub ultilization: u32,
+    pub utilization: u32,
 }
 
 impl WorkerStats {
@@ -204,7 +204,7 @@ impl<
                 WorkerControlIn::StatsRequest => {
                     let stats = WorkerStats {
                         tasks: self.inner.tasks(),
-                        ultilization: 0, //TODO measure this thread ultilization
+                        utilization: 0, //TODO measure this thread utilization
                     };
                     self.worker_out
                         .send(0, true, WorkerControlOut::Stats(stats))
