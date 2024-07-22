@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/8xFF/sans-io-runtime/compare/v0.1.0...v0.2.0) - 2024-07-22
+
+### Added
+- send multiple udp packets with multiple bind slots ([#50](https://github.com/8xFF/sans-io-runtime/pull/50))
+
+### Other
+- release v0.1.0 ([#46](https://github.com/8xFF/sans-io-runtime/pull/46))
+
 ## [0.1.0](https://github.com/8xFF/sans-io-runtime/releases/tag/v0.1.0) - 2024-07-18
 
 ### Added
