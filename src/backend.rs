@@ -66,6 +66,11 @@ pub enum BackendOutgoing {
         to: Vec<SocketAddr>,
         data: Buffer,
     },
+    #[cfg(feature = "udp")]
+    UdpPackets2 {
+        to: Vec<(usize, SocketAddr)>,
+        data: Buffer,
+    },
     #[cfg(feature = "tun-tap")]
     TunBind { fd: TunFd },
     #[cfg(feature = "tun-tap")]
