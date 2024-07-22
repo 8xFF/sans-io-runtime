@@ -20,7 +20,7 @@ socket2 = { version = "0.5", optional = true, features = ["all"] }
 tun = { version = "0.6", optional = true }
 
 [dev-dependencies]
-mockall = "0.12.1"
+mockall = "0.13.0"
 env_logger = "0.11"
 tiny_http = "0.12"
 str0m = "0.6"
