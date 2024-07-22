@@ -288,6 +288,18 @@ impl<
                     log::error!("Poll send_to error: no socket for {}", slot);
                 }
             }
+            #[cfg(feature = "udp")]
+            BackendOutgoing::UdpPackets2 { to, data } => {
+                for (slot, dest) in to {
+                    if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
+                        if let Err(e) = socket.send_to(&data, dest) {
+                            log::error!("Poll send_to error {:?}", e);
+                        }
+                    } else {
+                        log::error!("Poll send_to error: no socket for {}", slot);
+                    }
+                }
+            }
             #[cfg(feature = "tun-tap")]
             BackendOutgoing::TunBind { fd } => {
                 use std::os::unix::io::AsRawFd;
