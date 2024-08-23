@@ -69,11 +69,11 @@ impl<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> TaskGroup<In, Out, T, S
     }
 
     /// Send event to correct task with index
-    pub fn on_event(&mut self, now: Instant, index: usize, input: In) {
-        if let Some(Some(task)) = self.tasks.get_mut(index) {
-            self.switcher.flag_task(index);
-            task.on_event(now, input);
-        }
+    pub fn on_event(&mut self, now: Instant, index: usize, input: In) -> Option<()> {
+        let task = self.tasks.get_mut(index)?.as_mut()?;
+        self.switcher.flag_task(index);
+        task.on_event(now, input);
+        Some(())
     }
 
     /// Gracefully destroys the task group.

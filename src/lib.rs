@@ -139,11 +139,16 @@ macro_rules! group_task {
                 }
             }
 
-            pub fn on_event<'a>(&mut self, now: std::time::Instant, index: usize, input: $input) {
-                if let Some(Some(task)) = self.tasks.get_mut(index) {
-                    self.switcher.flag_task(index);
-                    task.on_event(now, input);
-                }
+            pub fn on_event<'a>(
+                &mut self,
+                now: std::time::Instant,
+                index: usize,
+                input: $input,
+            ) -> Option<()> {
+                let task = self.tasks.get_mut(index)?.as_mut()?;
+                self.switcher.flag_task(index);
+                task.on_event(now, input);
+                Some(())
             }
 
             pub fn pop_output<'a>(&mut self, now: std::time::Instant) -> Option<(usize, $output)> {
