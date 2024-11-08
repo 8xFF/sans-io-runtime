@@ -30,11 +30,13 @@ pub trait TaskSwitcherChild<Out> {
     fn is_empty(&self) -> bool;
     fn pop_output(&mut self, now: Self::Time) -> Option<Out>;
 }
+
+#[derive(Debug)]
 pub struct TaskSwitcherBranch<Task, Out> {
     task_type: usize,
     pub task: Task,
     /// If the task just sent empty output, we set this to true for avoiding stuck with send empty output loop.
-    is_empty: bool,
+    just_pop_empty: bool,
     _tmp: PhantomData<Out>,
 }
 
@@ -43,7 +45,7 @@ impl<Task: Default, Out> TaskSwitcherBranch<Task, Out> {
         Self {
             task_type: tt.into(),
             task: Default::default(),
-            is_empty: false,
+            just_pop_empty: false,
             _tmp: Default::default(),
         }
     }
@@ -54,7 +56,7 @@ impl<Task, Out> TaskSwitcherBranch<Task, Out> {
         Self {
             task_type: tt.into(),
             task,
-            is_empty: false,
+            just_pop_empty: false,
             _tmp: Default::default(),
         }
     }
@@ -67,21 +69,21 @@ impl<Task, Out> TaskSwitcherBranch<Task, Out> {
 
 impl<Task: TaskSwitcherChild<Out>, Out> TaskSwitcherBranch<Task, Out> {
     pub fn is_empty(&self) -> bool {
-        self.is_empty
+        self.task.is_empty()
     }
 
     pub fn pop_output(&mut self, now: Task::Time, s: &mut TaskSwitcher) -> Option<Out> {
         let out = self.task.pop_output(now);
         if out.is_none() {
-            if !self.is_empty {
+            if !self.just_pop_empty {
                 if self.task.is_empty() {
                     // we will send empty output once, if it's still empty, we will not send again
-                    self.is_empty = true;
+                    self.just_pop_empty = true;
                     return Some(self.task.empty_event());
                 }
             } else {
                 if !self.task.is_empty() {
-                    self.is_empty = false;
+                    self.just_pop_empty = false;
                 }
             }
 
@@ -99,6 +101,7 @@ impl<Task, Out> Deref for TaskSwitcherBranch<Task, Out> {
     }
 }
 
+#[derive(Debug)]
 pub struct TaskSwitcher {
     bits: BitVec,
 }
