@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/8xFF/sans-io-runtime/compare/v0.2.1...v0.3.0) - 2024-11-08
+
+### Added
+
+- task clean up ([#55](https://github.com/8xFF/sans-io-runtime/pull/55))
+
+### Other
+
+- update derive_more and mockall ([#57](https://github.com/8xFF/sans-io-runtime/pull/57))
+
 ## [0.2.1](https://github.com/8xFF/sans-io-runtime/compare/v0.2.0...v0.2.1) - 2024-08-23
 
 ### Added
