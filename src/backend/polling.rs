@@ -270,7 +270,7 @@ impl<
             BackendOutgoing::UdpPacket { to, slot, data } => {
                 if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
                     if let Err(e) = socket.send_to(&data, to) {
-                        log::error!("Polling send_to error {:?}", e);
+                        log::trace!("Polling send_to error {:?}", e);
                     }
                 } else {
                     log::error!("Polling send_to error: no socket for {:?}", to);
@@ -281,7 +281,7 @@ impl<
                 if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
                     for dest in to {
                         if let Err(e) = socket.send_to(&data, dest) {
-                            log::error!("Poll send_to error {:?}", e);
+                            log::trace!("Poll send_to error {:?}", e);
                         }
                     }
                 } else {
@@ -293,7 +293,7 @@ impl<
                 for (slot, dest) in to {
                     if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
                         if let Err(e) = socket.send_to(&data, dest) {
-                            log::error!("Poll send_to error {:?}", e);
+                            log::trace!("Poll send_to error {:?}", e);
                         }
                     } else {
                         log::error!("Poll send_to error: no socket for {}", slot);
@@ -353,39 +353,18 @@ impl<
             }
         }
     }
+}
 
-    // remove all sockets owned by owner and unregister from poll
-    fn remove_owner(&mut self, owner: Owner) {
-        for slot in self.sockets.iter_mut() {
-            match slot {
-                #[cfg(feature = "udp")]
-                Some(SocketType::Udp(socket, _, owner2)) => {
-                    if *owner2 == owner {
-                        if let Err(e) = self.poll.delete(socket) {
-                            log::error!("Polling deregister error {:?}", e);
-                        }
-                        *slot = None;
-                    }
-                }
-                #[cfg(feature = "tun-tap")]
-                Some(SocketType::Tun(fd, owner2)) => {
-                    use std::os::fd::BorrowedFd;
-                    use std::os::unix::io::AsRawFd;
-
-                    if *owner2 == owner {
-                        if fd.read {
-                            let fd = unsafe { BorrowedFd::borrow_raw(fd.fd.as_raw_fd()) };
-                            if let Err(e) = self.poll.delete(fd) {
-                                log::error!("Polling deregister error {:?}", e);
-                            }
-                        }
-                        *slot = None;
-                    }
-                }
-                Some(SocketType::Waker()) => {}
-                None => {}
-            }
-        }
+impl<Owner, const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> Drop
+    for PollingBackend<Owner, SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
+{
+    fn drop(&mut self) {
+        // we always keep one waker for polling
+        assert_eq!(
+            self.sockets.iter().filter(|s| s.is_some()).count(),
+            1,
+            "sockets should be empty"
+        );
     }
 }
 
@@ -506,10 +485,7 @@ mod tests {
             }
         }
 
-        backend.remove_owner(SimpleOwner(1));
-        assert_eq!(backend.socket_count(), 2);
-
-        backend.remove_owner(SimpleOwner(2));
-        assert_eq!(backend.socket_count(), 1);
+        backend.on_action(SimpleOwner(1), BackendOutgoing::UdpUnlisten { slot: slot1 });
+        backend.on_action(SimpleOwner(2), BackendOutgoing::UdpUnlisten { slot: slot2 });
     }
 }

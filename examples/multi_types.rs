@@ -94,6 +94,15 @@ impl Task<(), ()> for Task1 {
 
 impl TaskSwitcherChild<()> for Task1 {
     type Time = Instant;
+
+    fn empty_event(&self) -> () {
+        ()
+    }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+
     fn pop_output(&mut self, _now: Instant) -> Option<()> {
         None
     }
@@ -120,6 +129,15 @@ impl Task<(), ()> for Task2 {
 
 impl TaskSwitcherChild<()> for Task2 {
     type Time = Instant;
+
+    fn empty_event(&self) -> () {
+        ()
+    }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+
     fn pop_output(&mut self, _now: Instant) -> Option<()> {
         None
     }
@@ -145,7 +163,11 @@ impl WorkerInner<OwnerType, TestExtIn, TestExtOut, TestChannel, TestEvent, ICfg,
     for EchoWorkerInner
 {
     fn tasks(&self) -> usize {
-        self.task_type1.tasks() + self.task_type1.tasks()
+        self.task_type1.tasks() + self.task_type2.tasks()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.task_type1.is_empty() && self.task_type2.is_empty()
     }
 
     fn worker_index(&self) -> u16 {

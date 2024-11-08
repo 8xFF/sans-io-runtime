@@ -10,7 +10,7 @@ mod worker;
 pub use buffer::*;
 pub use controller::Controller;
 pub use task::{
-    group::TaskGroup,
+    group::{TaskGroup, TaskGroupOutput},
     switcher::{TaskSwitcher, TaskSwitcherBranch, TaskSwitcherChild},
     Task,
 };

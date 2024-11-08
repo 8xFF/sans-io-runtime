@@ -40,6 +40,7 @@
 /// assert_eq!(vec.get(1), Some(&2));
 /// assert_eq!(vec.get(2), Some(&3));
 /// ```
+#[derive(Debug)]
 pub struct DynamicVec<T, const STACK_SIZE: usize> {
     stack: heapless::Vec<T, STACK_SIZE>,
     heap: Vec<T>,
@@ -79,6 +80,15 @@ impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
             Some(&self.stack[index])
         } else {
             self.heap.get(index - self.stack.len())
+        }
+    }
+
+    /// Set the element at the given index.
+    pub fn set(&mut self, index: usize, value: T) {
+        if index < self.stack.len() {
+            self.stack[index] = value;
+        } else {
+            self.heap[index - self.stack.len()] = value;
         }
     }
 

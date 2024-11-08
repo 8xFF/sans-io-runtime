@@ -53,22 +53,6 @@ impl<Owner: Clone + Debug + PartialEq, ChannelId: Debug + Clone + Copy + Hash + 
     pub fn get_subscribers(&self, channel: ChannelId) -> Option<Vec<Owner>> {
         self.channels.get(&channel).cloned()
     }
-
-    /// remove owner from all channels
-    pub fn remove_owner(&mut self, owner: Owner) {
-        let mut removed_channels = vec![];
-        for (channel, entry) in self.channels.iter_mut() {
-            if let Some(pos) = entry.iter().position(|x| x == &owner) {
-                entry.swap_remove(pos);
-            }
-            if entry.is_empty() {
-                removed_channels.push(*channel);
-            }
-        }
-        for channel in removed_channels {
-            self.channels.remove(&channel);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -116,21 +100,5 @@ mod tests {
         assert_eq!(hub.get_subscribers(Channel::A), Some(vec![owner1, owner2]));
         assert_eq!(hub.get_subscribers(Channel::B), Some(vec![owner1]));
         assert_eq!(hub.get_subscribers(Channel::C), None);
-    }
-
-    #[test]
-    fn test_remove_owner() {
-        let mut hub: BusLocalHub<DemoOwner, Channel> = BusLocalHub::default();
-        let owner1 = DemoOwner(1);
-        let owner2 = DemoOwner(2);
-
-        hub.subscribe(owner1, Channel::A);
-        hub.subscribe(owner1, Channel::B);
-        hub.subscribe(owner2, Channel::A);
-
-        hub.remove_owner(owner1);
-
-        assert_eq!(hub.get_subscribers(Channel::A), Some(vec![owner2]));
-        assert_eq!(hub.get_subscribers(Channel::B), None);
     }
 }

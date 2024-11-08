@@ -84,6 +84,7 @@ pub enum WorkerControlOut<Ext, SCfg> {
 pub struct WorkerStats {
     pub tasks: usize,
     pub utilization: u32,
+    pub is_empty: bool,
 }
 
 impl WorkerStats {
@@ -109,7 +110,6 @@ pub enum WorkerInnerOutput<Owner, ExtOut, ChannelId, Event, SCfg> {
     /// First bool is message need to safe to send or not, second is the message
     Ext(bool, ExtOut),
     Spawn(SCfg),
-    Destroy(Owner),
     Continue,
 }
 
@@ -117,6 +117,7 @@ pub trait WorkerInner<Owner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> {
     fn build(worker: u16, cfg: ICfg) -> Self;
     fn worker_index(&self) -> u16;
     fn tasks(&self) -> usize;
+    fn is_empty(&self) -> bool;
     fn spawn(&mut self, now: Instant, cfg: SCfg);
     fn on_tick(&mut self, now: Instant);
     fn on_event(&mut self, now: Instant, event: WorkerInnerInput<Owner, ExtIn, ChannelId, Event>);
@@ -205,6 +206,7 @@ impl<
                     let stats = WorkerStats {
                         tasks: self.inner.tasks(),
                         utilization: 0, //TODO measure this thread utilization
+                        is_empty: self.inner.is_empty(),
                     };
                     self.worker_out
                         .send(0, true, WorkerControlOut::Stats(stats))
@@ -320,11 +322,6 @@ impl<
                     self.inner_bus.broadcast(safe, msg);
                 }
             },
-            WorkerInnerOutput::Destroy(owner) => {
-                log::info!("Worker {worker} destroy owner {:?}", owner);
-                self.backend.remove_owner(owner);
-                self.bus_local_hub.remove_owner(owner);
-            }
             WorkerInnerOutput::Ext(safe, ext) => {
                 // TODO don't hardcode 0
                 log::debug!("Worker {worker} send external");

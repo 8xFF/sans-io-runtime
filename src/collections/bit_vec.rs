@@ -1,5 +1,6 @@
 //! A bit vector implementation. which is used inside task switcher
 
+#[derive(Debug)]
 pub struct BitVec {
     bytes: Vec<u8>,
     len: usize,
@@ -54,6 +55,7 @@ impl BitVec {
         }
     }
 
+    // TODO: optimize this
     pub fn first_set_index(&self) -> Option<usize> {
         for (byte_index, &byte) in self.bytes.iter().enumerate() {
             if byte != 0 {
