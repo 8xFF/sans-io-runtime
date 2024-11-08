@@ -36,7 +36,7 @@ pub struct TaskSwitcherBranch<Task, Out> {
     task_type: usize,
     pub task: Task,
     /// If the task just sent empty output, we set this to true for avoiding stuck with send empty output loop.
-    just_pop_empty: bool,
+    is_empty: bool,
     _tmp: PhantomData<Out>,
 }
 
@@ -45,7 +45,7 @@ impl<Task: Default, Out> TaskSwitcherBranch<Task, Out> {
         Self {
             task_type: tt.into(),
             task: Default::default(),
-            just_pop_empty: false,
+            is_empty: false,
             _tmp: Default::default(),
         }
     }
@@ -56,7 +56,7 @@ impl<Task, Out> TaskSwitcherBranch<Task, Out> {
         Self {
             task_type: tt.into(),
             task,
-            just_pop_empty: false,
+            is_empty: false,
             _tmp: Default::default(),
         }
     }
@@ -75,16 +75,16 @@ impl<Task: TaskSwitcherChild<Out>, Out> TaskSwitcherBranch<Task, Out> {
     pub fn pop_output(&mut self, now: Task::Time, s: &mut TaskSwitcher) -> Option<Out> {
         let out = self.task.pop_output(now);
         if out.is_none() {
-            if !self.just_pop_empty {
+            if !self.is_empty {
                 if self.task.is_empty() {
                     // we will send empty output once, if it's still empty, we will not send again
-                    self.just_pop_empty = true;
+                    self.is_empty = true;
                     return Some(self.task.empty_event());
                 }
             } else {
                 #[allow(clippy::collapsible_else_if)]
                 if !self.task.is_empty() {
-                    self.just_pop_empty = false;
+                    self.is_empty = false;
                 }
             }
 
