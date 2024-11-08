@@ -82,6 +82,7 @@ impl<Task: TaskSwitcherChild<Out>, Out> TaskSwitcherBranch<Task, Out> {
                     return Some(self.task.empty_event());
                 }
             } else {
+                #[warn(clippy::collapsible_else_if)]
                 if !self.task.is_empty() {
                     self.just_pop_empty = false;
                 }

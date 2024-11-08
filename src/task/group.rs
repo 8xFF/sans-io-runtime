@@ -158,6 +158,7 @@ impl<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> TaskSwitcherChild<TaskG
                             ));
                         }
                     } else {
+                        #[warn(clippy::collapsible_else_if)]
                         if !slot.task.is_empty() {
                             slot.is_empty = false;
                             self.empty_tasks.remove(&index);
