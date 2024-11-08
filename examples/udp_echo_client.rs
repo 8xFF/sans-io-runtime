@@ -10,8 +10,8 @@ use std::{
 use sans_io_runtime::{
     backend::{BackendIncoming, BackendOutgoing, PollBackend},
     collections::DynamicDeque,
-    group_owner_type, Buffer, Controller, Task, TaskGroup, TaskSwitcherChild, WorkerInner,
-    WorkerInnerInput, WorkerInnerOutput,
+    group_owner_type, Buffer, Controller, Task, TaskGroup, TaskGroupOutput, TaskSwitcherChild,
+    WorkerInner, WorkerInnerInput, WorkerInnerOutput,
 };
 
 type ExtIn = ();
@@ -23,7 +23,7 @@ type Event = ();
 
 enum EchoTaskOutput {
     Net(BackendOutgoing),
-    Destroy,
+    OnResourceEmpty,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +39,7 @@ struct EchoTask {
     local_addr: SocketAddr,
     local_backend_slot: usize,
     output: DynamicDeque<EchoTaskOutput, 16>,
+    shutdown: bool,
 }
 
 impl EchoTask {
@@ -53,6 +54,7 @@ impl EchoTask {
                 addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 reuse: false,
             })]),
+            shutdown: false,
         }
     }
 }
@@ -81,7 +83,7 @@ impl Task<BackendIncoming, EchoTaskOutput> for EchoTask {
                 self.count += 1;
                 if self.count >= self.cfg.count {
                     log::info!("EchoTask done");
-                    self.output.push_back(EchoTaskOutput::Destroy);
+                    self.shutdown = true;
                 } else {
                     self.output
                         .push_back(EchoTaskOutput::Net(BackendOutgoing::UdpPacket {
@@ -100,12 +102,21 @@ impl Task<BackendIncoming, EchoTaskOutput> for EchoTask {
             .push_back(EchoTaskOutput::Net(BackendOutgoing::UdpUnlisten {
                 slot: self.local_backend_slot,
             }));
-        self.output.push_back(EchoTaskOutput::Destroy);
+        self.shutdown = true;
     }
 }
 
 impl TaskSwitcherChild<EchoTaskOutput> for EchoTask {
     type Time = Instant;
+
+    fn empty_event(&self) -> EchoTaskOutput {
+        EchoTaskOutput::OnResourceEmpty
+    }
+
+    fn is_empty(&self) -> bool {
+        self.shutdown && self.output.is_empty()
+    }
+
     fn pop_output(&mut self, _now: Instant) -> Option<EchoTaskOutput> {
         self.output.pop_front()
     }
@@ -121,6 +132,10 @@ struct EchoWorkerInner {
 impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for EchoWorkerInner {
     fn tasks(&self) -> usize {
         self.tasks.tasks()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
     }
 
     fn worker_index(&self) -> u16 {
@@ -159,8 +174,13 @@ impl WorkerInner<OwnerType, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for Ech
         &mut self,
         now: Instant,
     ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
-        let (index, out) = self.tasks.pop_output(now)?;
-        self.convert_output(OwnerType(index), out)
+        loop {
+            if let Some(TaskGroupOutput::TaskOutput(index, out)) = self.tasks.pop_output(now) {
+                if let Some(out) = self.convert_output(OwnerType(index), out) {
+                    return Some(out);
+                }
+            }
+        }
     }
 
     fn on_shutdown(&mut self, now: Instant) {
@@ -176,9 +196,9 @@ impl EchoWorkerInner {
     ) -> Option<WorkerInnerOutput<OwnerType, ExtOut, ChannelId, Event, SCfg>> {
         match out {
             EchoTaskOutput::Net(out) => Some(WorkerInnerOutput::Net(owner, out)),
-            EchoTaskOutput::Destroy => {
+            EchoTaskOutput::OnResourceEmpty => {
                 self.tasks.remove_task(owner.index());
-                Some(WorkerInnerOutput::Destroy(owner))
+                Some(WorkerInnerOutput::Continue)
             }
         }
     }

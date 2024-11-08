@@ -82,6 +82,15 @@ impl<T, const STACK_SIZE: usize> DynamicVec<T, STACK_SIZE> {
         }
     }
 
+    /// Set the element at the given index.
+    pub fn set(&mut self, index: usize, value: T) {
+        if index < self.stack.len() {
+            self.stack[index] = value;
+        } else {
+            self.heap[index - self.stack.len()] = value;
+        }
+    }
+
     /// Get the mutable element at the given index.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index < self.stack.len() {

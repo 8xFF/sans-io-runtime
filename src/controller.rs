@@ -9,12 +9,6 @@ use crate::{
 
 const DEFAULT_STACK_SIZE: usize = 12 * 1024 * 1024;
 
-enum State {
-    Running,
-    Shutdowning,
-    Shutdowned,
-}
-
 struct WorkerContainer {
     _join: std::thread::JoinHandle<()>,
     stats: WorkerStats,
@@ -34,7 +28,7 @@ pub struct Controller<
     worker_event: BusWorker<u16, WorkerControlOut<ExtOut, SCfg>, INNER_BUS_STACK>,
     worker_threads: Vec<WorkerContainer>,
     output: DynamicDeque<ExtOut, 16>,
-    state: State,
+    shutdown: bool,
 }
 
 impl<ExtIn: Clone, ExtOut: Clone, SCfg, ChannelId, Event, const INNER_BUS_STACK: usize> Default
@@ -52,7 +46,7 @@ impl<ExtIn: Clone, ExtOut: Clone, SCfg, ChannelId, Event, const INNER_BUS_STACK:
             worker_event,
             worker_threads: Vec::new(),
             output: DynamicDeque::default(),
-            state: State::Running,
+            shutdown: false,
         }
     }
 }
@@ -112,11 +106,7 @@ impl<
     }
 
     pub fn process(&mut self) -> Option<()> {
-        if matches!(self.state, State::Shutdowned) {
-            return None;
-        }
-        if matches!(self.state, State::Shutdowning) && self.count_running_workers() == 0 {
-            self.state = State::Shutdowned;
+        if self.shutdown && self.count_running_workers() == 0 {
             return None;
         }
 
@@ -172,13 +162,7 @@ impl<
     }
 
     pub fn shutdown(&mut self) {
-        match self.state {
-            State::Shutdowned | State::Shutdowning => {
-                return;
-            }
-            State::Running => {}
-        }
-        self.state = State::Shutdowning;
+        self.shutdown = true;
         for i in 0..self.worker_threads.len() {
             if let Err(e) = self
                 .worker_control_bus
@@ -222,7 +206,7 @@ impl<
     fn count_running_workers(&self) -> usize {
         self.worker_threads
             .iter()
-            .filter(|w| w.stats.tasks() > 0)
+            .filter(|w| w.stats.tasks() > 0 && !w.stats.is_empty)
             .count()
     }
 }

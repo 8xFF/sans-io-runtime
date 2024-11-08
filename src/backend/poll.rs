@@ -30,7 +30,7 @@
 //! backend.on_action((), BackendOutgoing::UdpPacket { slot, to, data });
 //!
 //! // Unregister an owner and remove associated sockets
-//! backend.remove_owner(());
+//! backend.on_action((), BackendOutgoing::UdpUnlisten { slot: slot });
 //! ```
 //!
 //! Note: This module assumes that the sans-io-runtime crate and the Poll library are already imported and available.
@@ -252,7 +252,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
             BackendOutgoing::UdpPacket { to, slot, data } => {
                 if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
                     if let Err(e) = socket.send_to(&data, to) {
-                        log::error!("Poll send_to error {:?}", e);
+                        log::trace!("Poll send_to error {:?}", e);
                     }
                 } else {
                     log::error!("Poll send_to error: no socket for {}", slot);
@@ -263,7 +263,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
                     for dest in to {
                         if let Err(e) = socket.send_to(&data, dest) {
-                            log::error!("Poll send_to error {:?}", e);
+                            log::trace!("Poll send_to error {:?}", e);
                         }
                     }
                 } else {
@@ -275,7 +275,7 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
                 for (slot, dest) in to {
                     if let Some(Some(SocketType::Udp(socket, _, _))) = self.sockets.get_mut(slot) {
                         if let Err(e) = socket.send_to(&data, dest) {
-                            log::error!("Poll send_to error {:?}", e);
+                            log::trace!("Poll send_to error {:?}", e);
                         }
                     } else {
                         log::error!("Poll send_to error: no socket for {}", slot);
@@ -311,26 +311,17 @@ impl<Owner: Clone + Copy + PartialEq, const SOCKET_LIMIT: usize, const QUEUE_SIZ
             }
         }
     }
+}
 
-    // remove all sockets owned by owner and unregister from poll
-    fn remove_owner(&mut self, owner: Owner) {
-        for slot in self.sockets.iter_mut() {
-            match slot {
-                #[cfg(feature = "udp")]
-                Some(SocketType::Udp(_socket, _, owner2)) => {
-                    if *owner2 == owner {
-                        *slot = None;
-                    }
-                }
-                #[cfg(feature = "tun-tap")]
-                Some(SocketType::Tun(_fd, owner2)) => {
-                    if *owner2 == owner {
-                        *slot = None;
-                    }
-                }
-                None => {}
-            }
-        }
+impl<Owner, const SOCKET_STACK_SIZE: usize, const QUEUE_STACK_SIZE: usize> Drop
+    for PollBackend<Owner, SOCKET_STACK_SIZE, QUEUE_STACK_SIZE>
+{
+    fn drop(&mut self) {
+        assert_eq!(
+            self.sockets.iter().filter(|s| s.is_some()).count(),
+            0,
+            "sockets should be empty"
+        );
     }
 }
 
@@ -447,10 +438,7 @@ mod tests {
             _ => panic!("Expected UdpPacket"),
         }
 
-        backend.remove_owner(SimpleOwner(1));
-        assert_eq!(backend.socket_count(), 1);
-
-        backend.remove_owner(SimpleOwner(2));
-        assert_eq!(backend.socket_count(), 0);
+        backend.on_action(SimpleOwner(1), BackendOutgoing::UdpUnlisten { slot: slot1 });
+        backend.on_action(SimpleOwner(2), BackendOutgoing::UdpUnlisten { slot: slot2 });
     }
 }

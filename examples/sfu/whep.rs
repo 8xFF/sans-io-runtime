@@ -33,7 +33,7 @@ pub enum WhepInput {
 pub enum WhepOutput {
     UdpPacket { to: SocketAddr, data: Buffer },
     Bus(BusChannelControl<ChannelId, KeyframeRequestKind>),
-    Destroy,
+    OnResourceEmpty,
 }
 
 pub struct WhepTask {
@@ -45,6 +45,7 @@ pub struct WhepTask {
     channel_id: u64,
     output: DynamicDeque<WhepOutput, 16>,
     has_input: bool,
+    disconnected: bool,
 }
 
 impl WhepTask {
@@ -88,6 +89,7 @@ impl WhepTask {
             channel_id: channel,
             output: DynamicDeque::default(),
             has_input: false,
+            disconnected: false,
         };
 
         Ok(WhepTaskBuildResult {
@@ -152,6 +154,7 @@ impl WhepTask {
                     }
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
+                            log::info!("WhepServerTask disconnected");
                             self.output
                                 .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                                     ChannelId::ConsumeAudio(self.channel_id),
@@ -160,7 +163,7 @@ impl WhepTask {
                                 .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                                     ChannelId::ConsumeVideo(self.channel_id),
                                 )));
-                            self.output.push_back(WhepOutput::Destroy);
+                            self.disconnected = true;
                             return self.output.pop_front();
                         }
                         _ => {}
@@ -251,6 +254,7 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
     }
 
     fn on_shutdown(&mut self, _now: Instant) {
+        log::info!("WhepServerTask on shutdown");
         self.has_input = true;
         self.rtc.disconnect();
         self.output
@@ -261,12 +265,21 @@ impl Task<WhepInput, WhepOutput> for WhepTask {
             .push_back(WhepOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::ConsumeVideo(self.channel_id),
             )));
-        self.output.push_back(WhepOutput::Destroy);
+        self.disconnected = true;
     }
 }
 
 impl TaskSwitcherChild<WhepOutput> for WhepTask {
     type Time = Instant;
+
+    fn empty_event(&self) -> WhepOutput {
+        WhepOutput::OnResourceEmpty
+    }
+
+    fn is_empty(&self) -> bool {
+        self.disconnected && self.output.is_empty()
+    }
+
     /// Retrieves the next output event from the task.
     fn pop_output(&mut self, now: Instant) -> Option<WhepOutput> {
         if self.has_input {
@@ -275,5 +288,16 @@ impl TaskSwitcherChild<WhepOutput> for WhepTask {
         } else {
             self.pop_event_inner(now, false)
         }
+    }
+}
+
+impl Drop for WhepTask {
+    fn drop(&mut self) {
+        log::info!("WhepServerTask dropped");
+        assert_eq!(
+            self.output.len(),
+            0,
+            "WhepTask should be empty when dropped"
+        );
     }
 }

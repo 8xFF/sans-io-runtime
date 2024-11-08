@@ -50,6 +50,10 @@ impl WorkerInner<SimpleOwner, ExtIn, ExtOut, ChannelId, Event, ICfg, SCfg> for E
         }
     }
 
+    fn is_empty(&self) -> bool {
+        self.shutdown && self.queue.is_empty()
+    }
+
     fn spawn(&mut self, _now: Instant, _cfg: SCfg) {}
     fn on_tick(&mut self, _now: Instant) {}
     fn on_event(

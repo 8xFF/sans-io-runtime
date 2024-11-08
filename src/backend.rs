@@ -93,7 +93,6 @@ pub trait Backend<Owner>: Default + BackendOwner<Owner> {
 
 pub trait BackendOwner<Owner> {
     fn on_action(&mut self, owner: Owner, action: BackendOutgoing);
-    fn remove_owner(&mut self, owner: Owner);
 }
 
 #[cfg(feature = "tun-tap")]

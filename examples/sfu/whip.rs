@@ -27,7 +27,7 @@ pub enum WhipInput {
 pub enum WhipOutput {
     UdpPacket { to: SocketAddr, data: Buffer },
     Bus(BusChannelControl<ChannelId, TrackMedia>),
-    Destroy,
+    OnResourceEmpty,
 }
 
 pub struct WhipTask {
@@ -39,6 +39,7 @@ pub struct WhipTask {
     channel_id: u64,
     output: DynamicDeque<WhipOutput, 8>,
     has_input: bool,
+    disconnected: bool,
 }
 
 impl WhipTask {
@@ -81,6 +82,7 @@ impl WhipTask {
             channel_id: channel,
             output: DynamicDeque::default(),
             has_input: false,
+            disconnected: false,
         };
 
         Ok(WhipTaskBuildResult {
@@ -135,11 +137,12 @@ impl WhipTask {
                     }
                     Str0mEvent::IceConnectionStateChange(state) => match state {
                         IceConnectionState::Disconnected => {
+                            log::info!("WhipServerTask disconnected");
                             self.output
                                 .push_back(WhipOutput::Bus(BusChannelControl::Unsubscribe(
                                     ChannelId::PublishVideo(self.channel_id),
                                 )));
-                            self.output.push_back(WhipOutput::Destroy);
+                            self.disconnected = true;
                             return self.output.pop_front();
                         }
                         _ => {}
@@ -215,18 +218,27 @@ impl Task<WhipInput, WhipOutput> for WhipTask {
     }
 
     fn on_shutdown(&mut self, _now: Instant) {
+        log::info!("WhipServerTask on shutdown");
         self.has_input = true;
         self.rtc.disconnect();
         self.output
             .push_back(WhipOutput::Bus(BusChannelControl::Unsubscribe(
                 ChannelId::PublishVideo(self.channel_id),
             )));
-        self.output.push_back(WhipOutput::Destroy);
+        self.disconnected = true;
     }
 }
 
 impl TaskSwitcherChild<WhipOutput> for WhipTask {
     type Time = Instant;
+
+    fn empty_event(&self) -> WhipOutput {
+        WhipOutput::OnResourceEmpty
+    }
+
+    fn is_empty(&self) -> bool {
+        self.disconnected && self.output.is_empty()
+    }
 
     /// Retrieves the next output event from the task.
     fn pop_output(&mut self, now: Instant) -> Option<WhipOutput> {
@@ -236,5 +248,16 @@ impl TaskSwitcherChild<WhipOutput> for WhipTask {
         } else {
             self.pop_event_inner(now, false)
         }
+    }
+}
+
+impl Drop for WhipTask {
+    fn drop(&mut self) {
+        log::info!("WhipServerTask dropped");
+        assert_eq!(
+            self.output.len(),
+            0,
+            "WhipTask should be empty when dropped"
+        );
     }
 }
