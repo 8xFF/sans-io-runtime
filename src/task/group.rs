@@ -1,12 +1,14 @@
-use std::{collections::HashSet, marker::PhantomData, time::Instant};
+use std::{collections::HashSet, fmt::Debug, marker::PhantomData, time::Instant};
 
 use crate::{collections::DynamicVec, Task, TaskSwitcher, TaskSwitcherChild};
 
+#[derive(Debug)]
 pub enum TaskGroupOutput<Out> {
     TaskOutput(usize, Out),
     OnResourceEmpty,
 }
 
+#[derive(Debug)]
 struct TaskContainer<T> {
     task: T,
     is_empty: bool,
@@ -22,6 +24,7 @@ impl<T> TaskContainer<T> {
 }
 
 /// Represents a group of tasks.
+#[derive(Debug)]
 pub struct TaskGroup<In, Out, T: Task<In, Out>, const STACK_SIZE: usize> {
     tasks: DynamicVec<Option<TaskContainer<T>>, STACK_SIZE>,
     tasks_count: usize,

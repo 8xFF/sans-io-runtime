@@ -40,6 +40,7 @@
 /// assert_eq!(vec.get(1), Some(&2));
 /// assert_eq!(vec.get(2), Some(&3));
 /// ```
+#[derive(Debug)]
 pub struct DynamicVec<T, const STACK_SIZE: usize> {
     stack: heapless::Vec<T, STACK_SIZE>,
     heap: Vec<T>,

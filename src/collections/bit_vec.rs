@@ -1,5 +1,6 @@
 //! A bit vector implementation. which is used inside task switcher
 
+#[derive(Debug)]
 pub struct BitVec {
     bytes: Vec<u8>,
     len: usize,
